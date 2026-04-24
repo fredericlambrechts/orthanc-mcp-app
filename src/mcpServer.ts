@@ -9,7 +9,7 @@ const MCP_UI_EXTENSION = 'io.modelcontextprotocol/ui';
 
 export const SERVER_INFO = {
   name: 'orthanc-mcp-app',
-  title: 'Orthanc DICOM Viewer',
+  title: 'Orthanc DICOM Viewer (widget build)',
   version: VERSION,
   description:
     'View any DICOMweb study inline in chat via the OHIF viewer. Powered by Orthanc. For demonstration, education, and non-diagnostic use only.',

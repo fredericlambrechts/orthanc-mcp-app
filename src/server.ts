@@ -133,9 +133,26 @@ async function handleMcpPost(req: Request, res: Response): Promise<void> {
     const sessionId = req.headers['mcp-session-id'] as string | undefined;
     let transport: StreamableHTTPServerTransport;
 
+    // Trace every inbound POST so we can tell whether the client is
+    // re-initializing or reusing a cached session.
+    console.log('[mcp-post]', JSON.stringify({
+      method: req.body?.method,
+      id: req.body?.id,
+      hasSessionId: Boolean(sessionId),
+      sessionKnown: Boolean(sessionId && transports[sessionId]),
+      userAgent: req.headers['user-agent'],
+    }));
+
     if (sessionId && transports[sessionId]) {
       transport = transports[sessionId];
     } else if (!sessionId && isInitializeRequest(req.body)) {
+      // One-time log of initialize params so we can see what clients advertise.
+      console.log('[mcp-init]', JSON.stringify({
+        userAgent: req.headers['user-agent'],
+        clientInfo: req.body?.params?.clientInfo,
+        capabilities: req.body?.params?.capabilities,
+        protocolVersion: req.body?.params?.protocolVersion,
+      }));
       transport = new StreamableHTTPServerTransport({
         sessionIdGenerator: () => randomUUID(),
         onsessioninitialized: (sid: string) => {
