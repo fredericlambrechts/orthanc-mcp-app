@@ -5,6 +5,7 @@ import { isInitializeRequest } from '@modelcontextprotocol/sdk/types.js';
 import { createMcpServerInstance, SERVER_INFO } from './mcpServer.js';
 import { dicomwebProxy } from './dicomweb/proxy.js';
 import { ohifPlaceholder } from './ohif/placeholder.js';
+import { createOhifStaticRouter, hasOhifBundle } from './ohif/static.js';
 
 const PORT = Number.parseInt(process.env.PORT ?? '3000', 10);
 const HOST = process.env.HOST ?? '0.0.0.0';
@@ -18,16 +19,27 @@ export function createApp(): express.Express {
 
   // Health check - for Fly.io / any uptime monitor.
   app.get('/health', (_req: Request, res: Response) => {
-    res.json({ ok: true, name: SERVER_INFO.name, version: SERVER_INFO.version });
+    res.json({
+      ok: true,
+      name: SERVER_INFO.name,
+      version: SERVER_INFO.version,
+      ohif_bundled: hasOhifBundle(),
+    });
   });
 
   // DICOMweb CORS proxy for OHIF -> any configured DICOMweb server.
   // Path shape: /dicomweb/{serverId}/{upstream-path-with-query}
   app.use('/dicomweb', dicomwebProxy);
 
-  // OHIF static bundle. In U6 this is replaced by the real OHIF v3 build.
-  // For now /ohif/viewer renders a placeholder that echoes its query params.
-  app.get('/ohif/viewer', ohifPlaceholder);
+  // OHIF static bundle. If ohif-dist/ is present (populated by
+  // scripts/download-ohif.sh or a bundled build), serve it from /ohif/*.
+  // Otherwise fall back to the placeholder that echoes query params.
+  const ohifRouter = createOhifStaticRouter();
+  if (ohifRouter) {
+    app.use('/ohif', ohifRouter);
+  } else {
+    app.get('/ohif/viewer', ohifPlaceholder);
+  }
 
   app.post('/mcp', handleMcpPost);
   app.get('/mcp', handleMcpGet);

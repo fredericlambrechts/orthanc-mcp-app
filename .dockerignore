@@ -1,0 +1,23 @@
+node_modules
+dist
+.git
+.github
+.env
+.env.*
+*.log
+.DS_Store
+.vscode
+.idea
+coverage
+.nyc_output
+.fly
+tmp
+test
+.claude
+# Markdown docs aren't needed in the runtime image
+feasibility-study.md
+tool-signatures.md
+prior-art.md
+plan.md
+probes
+demo

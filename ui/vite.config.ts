@@ -9,7 +9,8 @@ export default defineConfig({
   root: resolve(__dirname),
   plugins: [viteSingleFile()],
   build: {
-    outDir: resolve(__dirname, '../dist/ui'),
+    // Separate from dist/ui/ (which holds compiled TS) to avoid collision.
+    outDir: resolve(__dirname, '../dist/widget'),
     emptyOutDir: true,
     assetsInlineLimit: 100_000_000,
     cssCodeSplit: false,

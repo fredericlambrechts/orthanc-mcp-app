@@ -10,10 +10,13 @@ export const UI_RESOURCE_URI = 'ui://viewer';
 // the compiled src/ui/ directory: `dist/ui/index.html`.
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
-// When running compiled from dist/src/ui/resource.js: ../../ui/index.html
-const PROD_WIDGET_PATH = resolve(__dirname, '../../ui/index.html');
-// When running under tsx from src/ui/resource.ts: ../../dist/ui/index.html
-const DEV_WIDGET_PATH = resolve(__dirname, '../../dist/ui/index.html');
+
+// Path candidates for the built widget bundle. Vite outputs to dist/widget/
+// (separate from dist/ui/ which holds compiled TS):
+//   - Production (compiled): dist/ui/resource.js -> ../widget/index.html
+//   - Development (tsx):     src/ui/resource.ts  -> ../../dist/widget/index.html
+const PROD_WIDGET_PATH = resolve(__dirname, '../widget/index.html');
+const DEV_WIDGET_PATH = resolve(__dirname, '../../dist/widget/index.html');
 
 const FALLBACK_HTML = `<!doctype html>
 <html>
@@ -28,10 +31,13 @@ const FALLBACK_HTML = `<!doctype html>
 </html>`;
 
 async function loadWidgetHtml(): Promise<string> {
-  const candidates = [PROD_WIDGET_PATH, DEV_WIDGET_PATH];
-  for (const path of candidates) {
+  for (const path of [PROD_WIDGET_PATH, DEV_WIDGET_PATH]) {
     try {
-      return await readFile(path, 'utf8');
+      const html = await readFile(path, 'utf8');
+      // Source HTML references `/src/widget.ts` which only resolves under
+      // Vite's dev server, not as a static page. Detect that and skip.
+      if (/\/src\/widget\.ts/.test(html)) continue;
+      return html;
     } catch {
       // try next
     }
