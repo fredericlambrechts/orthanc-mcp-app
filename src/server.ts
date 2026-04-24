@@ -1,5 +1,7 @@
 import express, { type Request, type Response } from 'express';
 import { randomUUID } from 'node:crypto';
+import { dirname, resolve } from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { StreamableHTTPServerTransport } from '@modelcontextprotocol/sdk/server/streamableHttp.js';
 import { isInitializeRequest } from '@modelcontextprotocol/sdk/types.js';
 import { createMcpServerInstance, SERVER_INFO } from './mcpServer.js';
@@ -26,6 +28,31 @@ export function createApp(): express.Express {
       version: SERVER_INFO.version,
       ohif_bundled: hasOhifBundle(),
     });
+  });
+
+  // Static branding assets (Orthanc icon + wordmark, served to Claude.ai via
+  // the `icons` field on `serverInfo`). Directory is committed at the project
+  // root. Resolve with two candidates because server.js lives in a different
+  // relative position depending on whether we're under tsx (src/server.ts ->
+  // ../assets) or compiled (dist/server.js -> ../assets). Both resolve the
+  // same /app/assets directory in the Fly.io image.
+  const assetsDir = resolve(
+    dirname(fileURLToPath(import.meta.url)),
+    '../assets',
+  );
+  app.use(
+    '/assets',
+    express.static(assetsDir, {
+      maxAge: '1d',
+      etag: true,
+      fallthrough: true,
+    }),
+  );
+
+  // Favicon - points at the Orthanc icon so browsers landing on the root URL
+  // see a branded tab.
+  app.get('/favicon.ico', (_req, res) => {
+    res.redirect(301, '/assets/orthanc-icon.png');
   });
 
   // DICOMweb CORS proxy for OHIF -> any configured DICOMweb server.

@@ -29,6 +29,10 @@ RUN npm ci --no-audit --no-fund --omit=dev
 # Copy compiled output and bundled assets
 COPY --from=build /app/dist ./dist
 COPY --from=build /app/ui ./ui
+# Branding assets (Orthanc icon + wordmark) served at /assets/* and referenced
+# by the MCP serverInfo.icons field so Claude.ai displays the Orthanc logo
+# in the Connectors UI.
+COPY assets ./assets
 # If ohif-dist/ is present in the build context, copy it. Empty otherwise -
 # the /ohif/viewer route falls back to the placeholder. See README.md for
 # instructions on dropping in a real OHIF v3 build.
