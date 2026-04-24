@@ -9,6 +9,15 @@ import { dicomwebProxy } from './dicomweb/proxy.js';
 import { ohifPlaceholder } from './ohif/placeholder.js';
 import { createOhifStaticRouter, hasOhifBundle } from './ohif/static.js';
 import { clearViewState } from './state/session.js';
+import { getPublicOrigin } from './ui/resource.js';
+
+function getPublicOriginSafe(): string {
+  try {
+    return getPublicOrigin();
+  } catch {
+    return '';
+  }
+}
 
 const PORT = Number.parseInt(process.env.PORT ?? '3000', 10);
 const HOST = process.env.HOST ?? '0.0.0.0';
@@ -49,10 +58,53 @@ export function createApp(): express.Express {
     }),
   );
 
-  // Favicon - points at the Orthanc icon so browsers landing on the root URL
-  // see a branded tab.
+  // Favicon - serve the original Orthanc .ico directly (no redirect) because
+  // many clients (including Claude.ai's connector UI) fetch /favicon.ico and
+  // do not follow redirects.
   app.get('/favicon.ico', (_req, res) => {
-    res.redirect(301, '/assets/orthanc-icon.png');
+    res.sendFile(resolve(assetsDir, 'orthanc-favicon.ico'), {
+      headers: { 'Cache-Control': 'public, max-age=86400' },
+    });
+  });
+  // Apple touch icon - iOS/macOS and some other clients fetch this.
+  app.get('/apple-touch-icon.png', (_req, res) => {
+    res.sendFile(resolve(assetsDir, 'orthanc-icon.png'), {
+      headers: { 'Cache-Control': 'public, max-age=86400' },
+    });
+  });
+  // Root landing page - minimal HTML with icon meta tags for clients that
+  // scrape the origin root when rendering a connector card.
+  app.get('/', (_req, res) => {
+    res.setHeader('Content-Type', 'text/html; charset=utf-8');
+    res.send(`<!doctype html>
+<html>
+<head>
+  <meta charset="UTF-8" />
+  <title>Orthanc DICOM Viewer - Claude MCP App</title>
+  <meta name="description" content="View DICOM studies inline in Claude via the OHIF viewer. Powered by Orthanc. For demonstration, education, and non-diagnostic use only." />
+  <link rel="icon" type="image/x-icon" href="/favicon.ico" />
+  <link rel="icon" type="image/png" sizes="32x32" href="/assets/orthanc-icon.png" />
+  <link rel="apple-touch-icon" href="/apple-touch-icon.png" />
+  <meta property="og:title" content="Orthanc DICOM Viewer" />
+  <meta property="og:description" content="View DICOM studies inline in Claude. Powered by Orthanc." />
+  <meta property="og:image" content="${getPublicOriginSafe()}/assets/orthanc-wordmark.png" />
+  <meta property="og:url" content="${getPublicOriginSafe()}/" />
+  <meta property="og:type" content="website" />
+  <style>
+    body { font: 14px/1.5 -apple-system, Segoe UI, sans-serif; max-width: 640px; margin: 48px auto; padding: 0 16px; color: #222; }
+    img { max-width: 320px; height: auto; }
+    .disclaimer { color: #888; font-size: 12px; margin-top: 32px; font-style: italic; }
+    code { background: #f4f4f4; padding: 2px 6px; border-radius: 3px; }
+  </style>
+</head>
+<body>
+  <img src="/assets/orthanc-wordmark.png" alt="Orthanc" />
+  <h1>Orthanc DICOM Viewer</h1>
+  <p>A Claude MCP App that embeds the OHIF DICOM viewer inline in chat. Paste any DICOMweb study link and the viewer renders.</p>
+  <p>MCP endpoint: <code>/mcp</code> - see <a href="https://github.com/fredericlambrechts/orthanc-mcp-app">GitHub</a> for install instructions.</p>
+  <p class="disclaimer">For demonstration, education, and non-diagnostic use only. Not a medical device. Powered by <a href="https://www.orthanc-server.com/">Orthanc</a>, the open-source DICOM server.</p>
+</body>
+</html>`);
   });
 
   // DICOMweb CORS proxy for OHIF -> any configured DICOMweb server.
