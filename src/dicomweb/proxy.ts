@@ -2,11 +2,20 @@ import { type NextFunction, type Request, type Response } from 'express';
 import { getServerById } from '../config.js';
 
 // Headers we never forward from the inbound request to the upstream server.
-// - authorization: safety rail for v1, we only talk to anonymous DICOMweb endpoints
+// - authorization / proxy-authorization / x-*-key / x-*-token: v1 safety rail;
+//   we only talk to anonymous DICOMweb endpoints and refuse to relay credentials
 // - host, connection, content-length: hop-by-hop or rewritten by fetch
 // - cookie: belongs to the Claude host origin, irrelevant upstream
+// - mcp-session-id: our own transport marker, not meaningful upstream
 const INBOUND_HEADER_BLOCKLIST = new Set([
   'authorization',
+  'proxy-authorization',
+  'authentication',
+  'x-api-key',
+  'x-auth-token',
+  'x-access-token',
+  'x-amz-security-token',
+  'x-csrf-token',
   'host',
   'connection',
   'content-length',
@@ -15,6 +24,10 @@ const INBOUND_HEADER_BLOCKLIST = new Set([
   'referer',
   'mcp-session-id',
 ]);
+
+// Timeout on the outbound fetch. Kept generous for large WADO-RS bulkdata;
+// tighten later per-route if we add streaming metadata vs. pixel splits.
+const UPSTREAM_FETCH_TIMEOUT_MS = 30_000;
 
 // Headers we never forward from the upstream response to our client.
 // Node 22's fetch (undici) auto-decompresses, so content-encoding and
@@ -30,6 +43,25 @@ const UPSTREAM_HEADER_BLOCKLIST = new Set([
   'access-control-max-age',
   'access-control-expose-headers',
 ]);
+
+/**
+ * Detect obvious path-traversal attempts. We reject both literal `..`
+ * segments and common encoded forms (`%2e%2e`, `%2E%2E`, `..%2f`, `%2f..`,
+ * and nested mixed encodings). Defence-in-depth alongside the resolved-URL
+ * prefix check.
+ */
+export function hasPathTraversal(upstreamPath: string): boolean {
+  if (!upstreamPath) return false;
+  // Literal `..` path segment
+  if (/(^|\/|\\)\.\.(\/|\\|$)/.test(upstreamPath)) return true;
+  // Encoded variants (single or double-encoded)
+  const lower = upstreamPath.toLowerCase();
+  if (lower.includes('%2e%2e')) return true;
+  if (lower.includes('%252e%252e')) return true;
+  // Backslash variants (some servers treat as separator)
+  if (upstreamPath.includes('\\..')) return true;
+  return false;
+}
 
 export function buildUpstreamHeaders(
   inbound: NodeJS.Dict<string | string[]>,
@@ -119,25 +151,75 @@ export async function dicomwebProxy(
     return;
   }
 
+  // Reject path-traversal inputs BEFORE URL resolution. We then verify the
+  // resolved URL's pathname still lies under the configured base_url, as
+  // defence-in-depth against encodings we might have missed.
+  if (hasPathTraversal(upstreamPath)) {
+    applyCorsHeaders(res);
+    res.status(400).json({
+      error: 'Bad Request',
+      message: 'Path traversal segments are not permitted',
+    });
+    return;
+  }
+
   const base = serverConfig.base_url.replace(/\/+$/, '');
-  const targetUrl = base + upstreamPath + upstreamQuery;
+  let resolved: URL;
+  let baseUrl: URL;
+  try {
+    baseUrl = new URL(base + '/');
+    resolved = new URL(upstreamPath.replace(/^\/+/, '') + upstreamQuery, baseUrl);
+  } catch {
+    applyCorsHeaders(res);
+    res.status(400).json({
+      error: 'Bad Request',
+      message: 'Unresolvable upstream URL',
+    });
+    return;
+  }
+  if (
+    resolved.origin !== baseUrl.origin ||
+    !resolved.pathname.startsWith(baseUrl.pathname)
+  ) {
+    applyCorsHeaders(res);
+    res.status(400).json({
+      error: 'Bad Request',
+      message: 'Resolved upstream URL escapes the configured server base',
+    });
+    return;
+  }
+  const targetUrl = resolved.toString();
 
   const headers = buildUpstreamHeaders(req.headers);
 
-  let upstreamRes: Response | globalThis.Response;
+  // redirect: 'manual' means fetch() returns a 3xx response object rather
+  // than silently following. We refuse to follow - an upstream redirect to
+  // 127.0.0.1 / RFC1918 / 169.254.169.254 would turn the proxy into an SSRF
+  // pivot. For a DICOMweb endpoint, a 3xx is nearly always misconfig anyway.
+  let upstreamRes: globalThis.Response;
   try {
     upstreamRes = await fetch(targetUrl, {
       method: req.method,
       headers,
-      redirect: 'follow',
+      redirect: 'manual',
+      signal: AbortSignal.timeout(UPSTREAM_FETCH_TIMEOUT_MS),
     });
   } catch (err) {
     applyCorsHeaders(res);
     if (!res.headersSent) {
-      res.status(502).json({
-        error: 'Bad Gateway',
-        message: err instanceof Error ? err.message : 'Upstream fetch failed',
-        target: targetUrl,
+      const isTimeout =
+        err instanceof DOMException && err.name === 'TimeoutError';
+      console.warn('[dicomweb-proxy] upstream fetch failed', {
+        server_id: serverId,
+        timeout: isTimeout,
+        error: err instanceof Error ? err.message : String(err),
+      });
+      res.status(isTimeout ? 504 : 502).json({
+        error: isTimeout ? 'Gateway Timeout' : 'Bad Gateway',
+        message: isTimeout
+          ? 'Upstream DICOMweb server did not respond in time'
+          : 'Upstream DICOMweb server is unreachable',
+        server_id: serverId,
       });
     } else {
       res.end();
@@ -145,17 +227,30 @@ export async function dicomwebProxy(
     return;
   }
 
+  if (upstreamRes.status >= 300 && upstreamRes.status < 400) {
+    applyCorsHeaders(res);
+    console.warn('[dicomweb-proxy] refused to follow upstream redirect', {
+      server_id: serverId,
+      status: upstreamRes.status,
+    });
+    res.status(502).json({
+      error: 'Bad Gateway',
+      message:
+        'Upstream DICOMweb server returned a redirect; following cross-host redirects is disabled for security',
+      server_id: serverId,
+    });
+    return;
+  }
+
   applyCorsHeaders(res);
   res.status(upstreamRes.status);
 
-  (upstreamRes as globalThis.Response).headers.forEach(
-    (value: string, key: string) => {
-      if (UPSTREAM_HEADER_BLOCKLIST.has(key.toLowerCase())) return;
-      res.setHeader(key, value);
-    },
-  );
+  upstreamRes.headers.forEach((value: string, key: string) => {
+    if (UPSTREAM_HEADER_BLOCKLIST.has(key.toLowerCase())) return;
+    res.setHeader(key, value);
+  });
 
-  const body = (upstreamRes as globalThis.Response).body;
+  const body = upstreamRes.body;
   if (!body) {
     res.end();
     return;
