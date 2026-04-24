@@ -58,11 +58,21 @@ async function loadWidgetHtml(): Promise<string> {
 /**
  * Returns the public origin of the MCP server, e.g. `https://orthanc-mcp-app.fly.dev`.
  * Pulled from PUBLIC_ORIGIN env var. Falls back to localhost for local dev.
+ *
+ * In production (`NODE_ENV=production`) we refuse to fall back: an unset or
+ * malformed PUBLIC_ORIGIN means the widget CSP would point at localhost and
+ * the browser would block every request from the Claude host. Failing fast
+ * at startup is louder than a silently broken demo.
  */
 export function getPublicOrigin(): string {
-  const raw = process.env.PUBLIC_ORIGIN;
-  if (raw && /^https?:\/\//.test(raw)) {
+  const raw = process.env.PUBLIC_ORIGIN?.trim();
+  if (raw && /^https?:\/\/[^\s/]+\/?$/.test(raw)) {
     return raw.replace(/\/+$/, '');
+  }
+  if (process.env.NODE_ENV === 'production') {
+    throw new Error(
+      'PUBLIC_ORIGIN is missing or malformed. Set it to the https:// URL of this deploy before start (e.g. `fly secrets set PUBLIC_ORIGIN=https://orthanc-mcp-app.fly.dev`).',
+    );
   }
   const port = process.env.PORT ?? '3000';
   return `http://localhost:${port}`;

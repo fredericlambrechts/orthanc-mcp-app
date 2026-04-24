@@ -6,6 +6,7 @@ import { createMcpServerInstance, SERVER_INFO } from './mcpServer.js';
 import { dicomwebProxy } from './dicomweb/proxy.js';
 import { ohifPlaceholder } from './ohif/placeholder.js';
 import { createOhifStaticRouter, hasOhifBundle } from './ohif/static.js';
+import { clearViewState } from './state/session.js';
 
 const PORT = Number.parseInt(process.env.PORT ?? '3000', 10);
 const HOST = process.env.HOST ?? '0.0.0.0';
@@ -66,6 +67,7 @@ async function handleMcpPost(req: Request, res: Response): Promise<void> {
         const sid = transport.sessionId;
         if (sid && transports[sid]) {
           delete transports[sid];
+          clearViewState(sid);
         }
       };
       const server = createMcpServerInstance();
@@ -130,12 +132,40 @@ const isDirect =
 
 if (isDirect) {
   const app = createApp();
-  app.listen(PORT, HOST, () => {
+  const httpServer = app.listen(PORT, HOST, () => {
     console.log(`[${SERVER_INFO.name}] listening on http://${HOST}:${PORT}`);
     console.log(`  POST ${`http://${HOST}:${PORT}/mcp`}  (MCP Streamable HTTP)`);
     console.log(`  GET  ${`http://${HOST}:${PORT}/health`}`);
   });
 
-  process.on('SIGTERM', () => process.exit(0));
-  process.on('SIGINT', () => process.exit(0));
+  const GRACEFUL_SHUTDOWN_MS = 4_500; // Fly kill_timeout is 5s; leave a margin.
+
+  async function gracefulShutdown(signal: string): Promise<void> {
+    console.log(`[${SERVER_INFO.name}] ${signal} received, shutting down`);
+
+    // Stop accepting new HTTP connections.
+    httpServer.close((err) => {
+      if (err) console.warn('[server] http close error', err);
+    });
+
+    // Close active MCP transports cleanly so clients see a proper EOF rather
+    // than a socket reset mid-stream.
+    const closes = Object.values(transports).map((t) =>
+      Promise.resolve(t.close()).catch((err) => {
+        console.warn('[server] transport close error', err);
+      }),
+    );
+    await Promise.race([
+      Promise.all(closes),
+      new Promise<void>((resolve) => setTimeout(resolve, GRACEFUL_SHUTDOWN_MS)),
+    ]);
+    process.exit(0);
+  }
+
+  process.on('SIGTERM', () => {
+    void gracefulShutdown('SIGTERM');
+  });
+  process.on('SIGINT', () => {
+    void gracefulShutdown('SIGINT');
+  });
 }
