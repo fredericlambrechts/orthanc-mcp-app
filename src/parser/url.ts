@@ -99,12 +99,14 @@ export function parseReferenceShape(raw: string): ParsedRef {
     return { kind: 'reject', code: 'UNPARSEABLE', message: 'invalid URL' };
   }
 
-  // Reject IP-literal hosts (including localhost) to avoid proxy-style tricks.
-  if (isIpLiteralHost(url.hostname)) {
+  // Reject IP-literal, metadata, loopback, and private-range hosts to avoid
+  // SSRF pivots through the server-side Orthanc lookup and DICOMweb proxy.
+  if (isIpLiteralHost(url.hostname) || isPrivateIpv4(url.hostname)) {
     return {
       kind: 'reject',
       code: 'REJECTED_HOST',
-      message: 'IP-literal and localhost hosts are not accepted in v1',
+      message:
+        'IP-literal, localhost, cloud-metadata, and private-range hosts are not accepted in v1 (public DICOMweb servers only)',
     };
   }
 
@@ -192,23 +194,136 @@ export function parseReferenceShape(raw: string): ParsedRef {
   };
 }
 
+// Hostnames that must be rejected regardless of IP resolution. These are
+// known cloud-metadata endpoints and common internal-service aliases that
+// an attacker might paste to turn the proxy into an internal port scanner.
+const BLOCKED_HOSTNAMES: readonly string[] = [
+  'localhost',
+  'localhost.localdomain',
+  // Cloud metadata services (Google, AWS, Azure, DigitalOcean, Oracle)
+  'metadata.google.internal',
+  'metadata.goog',
+  'metadata',
+  'instance-data',
+  // Kubernetes service aliases
+  'kubernetes',
+  'kubernetes.default',
+  'kubernetes.default.svc',
+];
+
+// DNS suffixes that imply private/internal addressing.
+const BLOCKED_HOSTNAME_SUFFIXES: readonly string[] = [
+  '.internal',
+  '.local',
+  '.localdomain',
+  '.svc',
+  '.svc.cluster.local',
+  '.cluster.local',
+];
+
 export function isIpLiteralHost(hostname: string): boolean {
-  // IPv4 literal
-  if (/^\d{1,3}(?:\.\d{1,3}){3}$/.test(hostname)) return true;
-  // IPv6 literal (URL parsing keeps square brackets stripped from hostname)
-  if (/^[0-9a-f:]+$/i.test(hostname) && hostname.includes(':')) return true;
-  // localhost (security - could be a local proxy)
-  if (hostname.toLowerCase() === 'localhost') return true;
+  // URL parsing preserves brackets on IPv6 literals (e.g. '[::1]'). If the
+  // brackets are present at all, it IS an IPv6 literal - reject unconditionally,
+  // which also covers IPv4-mapped forms like [::ffff:127.0.0.1].
+  if (hostname.startsWith('[') && hostname.endsWith(']')) return true;
+
+  const bare = hostname;
+  const lower = bare.toLowerCase();
+
+  // IPv6 literal without brackets (defensive - URL() normally adds brackets)
+  if (/^[0-9a-f:]+$/i.test(bare) && bare.includes(':')) return true;
+
+  // IPv4 literal - classic dotted notation
+  const ipv4Match = bare.match(/^(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})$/);
+  if (ipv4Match) return true;
+
+  // IPv4 literal - decimal form (e.g. 2130706433 = 127.0.0.1)
+  if (/^\d+$/.test(bare) && bare.length <= 10) return true;
+
+  // IPv4 literal - hex form (e.g. 0x7f000001)
+  if (/^0x[0-9a-f]+$/i.test(bare)) return true;
+
+  // Known-bad DNS aliases
+  if (BLOCKED_HOSTNAMES.includes(lower)) return true;
+
+  // Suffix-based blocks (internal DNS, kubernetes service aliases, etc).
+  for (const suffix of BLOCKED_HOSTNAME_SUFFIXES) {
+    if (lower.endsWith(suffix)) return true;
+  }
+
   return false;
 }
 
+/**
+ * Returns true when the hostname resolves (or is an IP literal pointing at)
+ * a private, loopback, link-local, or otherwise non-routable address.
+ *
+ * This is only exact for IP literals. For DNS hostnames we intentionally
+ * do NOT do DNS lookups in the parser (that would be a side effect); higher
+ * layers (proxy, resolver) should apply DNS-pinning guards if they want a
+ * truly authoritative check. For v1 we rely on IP-literal rejection plus
+ * BLOCKED_HOSTNAMES/BLOCKED_HOSTNAME_SUFFIXES to catch the obvious bypasses.
+ */
+export function isPrivateIpv4(hostname: string): boolean {
+  const bare =
+    hostname.startsWith('[') && hostname.endsWith(']')
+      ? hostname.slice(1, -1)
+      : hostname;
+
+  const m = bare.match(/^(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})$/);
+  if (!m) return false;
+  const [a, b] = [Number(m[1]), Number(m[2])];
+  if (a < 0 || a > 255 || b < 0 || b > 255) return true; // malformed - reject
+  // 0.0.0.0/8 - "this network"
+  if (a === 0) return true;
+  // 10.0.0.0/8
+  if (a === 10) return true;
+  // 127.0.0.0/8 - loopback
+  if (a === 127) return true;
+  // 169.254.0.0/16 - link-local (includes AWS/GCP metadata 169.254.169.254)
+  if (a === 169 && b === 254) return true;
+  // 172.16.0.0/12
+  if (a === 172 && b >= 16 && b <= 31) return true;
+  // 192.168.0.0/16
+  if (a === 192 && b === 168) return true;
+  // 100.64.0.0/10 - CGNAT
+  if (a === 100 && b >= 64 && b <= 127) return true;
+  return false;
+}
+
+// Query parameter keys whose presence implies a user-bearable credential.
+// Matched case-insensitively against the full URLSearchParams keyset.
+const AUTH_QUERY_KEYS: readonly string[] = [
+  'token',
+  'access_token',
+  'authorization',
+  'api_key',
+  'apikey',
+  'key',
+  'jwt',
+  'bearer',
+  'sig',
+  'signature',
+  'x-amz-signature',
+  'auth',
+];
+
 export function looksAuthenticated(url: URL): boolean {
-  const path = url.pathname.toLowerCase();
-  if (path.includes('/auth/')) return true;
-  if (url.searchParams.has('token')) return true;
-  if (url.searchParams.has('access_token')) return true;
-  if (url.searchParams.has('authorization')) return true;
-  if (url.username || url.password) return true; // http://user:pass@host
+  // Check the fragment as well as the pathname - a URL like
+  // `https://x.com/foo#/auth/bar` keeps `/auth/` in `url.hash`, not `pathname`.
+  const pathAndHash = (url.pathname + url.hash).toLowerCase();
+  if (pathAndHash.includes('/auth/')) return true;
+  if (/%2fauth%2f/i.test(pathAndHash)) return true;
+
+  // Case-insensitive query-key scan. URLSearchParams.has() is case-sensitive,
+  // so we iterate keys and lowercase-compare.
+  for (const key of url.searchParams.keys()) {
+    if (AUTH_QUERY_KEYS.includes(key.toLowerCase())) return true;
+  }
+
+  // http://user:pass@host
+  if (url.username || url.password) return true;
+
   return false;
 }
 
@@ -231,19 +346,34 @@ export function isBareStudyInstanceUID(s: string): boolean {
  * Throws on HTTP failure or if the response is missing
  * MainDicomTags.StudyInstanceUID.
  */
+const ORTHANC_LOOKUP_TIMEOUT_MS = 10_000;
+
 export async function resolveOrthancId(
   restBase: string,
   orthancId: string,
 ): Promise<string> {
   const base = restBase.replace(/\/+$/, '');
   const restUrl = `${base}/studies/${orthancId}`;
-  const res = await fetch(restUrl, {
-    headers: { Accept: 'application/json' },
-  });
-  if (!res.ok) {
+  let res: globalThis.Response;
+  try {
+    res = await fetch(restUrl, {
+      headers: { Accept: 'application/json' },
+      redirect: 'manual',
+      signal: AbortSignal.timeout(ORTHANC_LOOKUP_TIMEOUT_MS),
+    });
+  } catch (err) {
+    if (err instanceof DOMException && err.name === 'TimeoutError') {
+      throw new Error('Orthanc REST lookup timed out');
+    }
+    throw new Error('Orthanc REST lookup failed (upstream unreachable)');
+  }
+  if (res.status >= 300 && res.status < 400) {
     throw new Error(
-      `Orthanc REST lookup failed: ${res.status} ${res.statusText} (${restUrl})`,
+      'Orthanc REST server returned a redirect; cross-host redirects are disabled',
     );
+  }
+  if (!res.ok) {
+    throw new Error(`Orthanc REST lookup failed: ${res.status} ${res.statusText}`);
   }
   const data = (await res.json()) as {
     MainDicomTags?: { StudyInstanceUID?: string };
@@ -251,7 +381,7 @@ export async function resolveOrthancId(
   const uid = data.MainDicomTags?.StudyInstanceUID;
   if (!uid) {
     throw new Error(
-      `Orthanc REST response at ${restUrl} is missing MainDicomTags.StudyInstanceUID`,
+      'Orthanc REST response is missing MainDicomTags.StudyInstanceUID',
     );
   }
   return uid;
