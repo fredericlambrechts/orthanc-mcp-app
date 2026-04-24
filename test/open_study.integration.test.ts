@@ -42,7 +42,11 @@ describe('open_study - bare UID', () => {
     expect(s.server_id).toBe('orthanc-demo');
     expect(s.reference_kind).toBe('bare_uid');
     expect(s.ui_meta.initialData.studyUid).toBe('1.2.840.113619.2.5.1762583153');
-    expect(s.ui_meta.initialData.dicomwebBaseUrl).toBe('/dicomweb/orthanc-demo');
+    // dicomwebBaseUrl is absolute so the Claude-hosted widget iframe resolves
+    // it against our Fly origin, not the MCP sandbox host.
+    expect(s.ui_meta.initialData.dicomwebBaseUrl).toMatch(
+      /^https?:\/\/[^/]+\/dicomweb\/orthanc-demo$/,
+    );
   });
 });
 

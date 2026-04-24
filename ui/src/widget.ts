@@ -56,13 +56,17 @@ async function main(): Promise<void> {
 
   // Tool results arrive via ontoolresult when a tool that renders this
   // widget finishes (open_study, set_view, etc).
+  // ext-apps delivers the CallToolResult directly as `params` (schema:
+  // McpUiToolResultNotificationSchema → params = CallToolResultSchema).
   app.ontoolresult = (params: {
-    result?: { structuredContent?: unknown };
+    structuredContent?: unknown;
   }) => {
-    setDiag('ontoolresult', `fired @ ${new Date().toISOString()}`);
-    const structured = params.result?.structuredContent as
+    const structured = params.structuredContent as
       | Record<string, unknown>
       | undefined;
+    const keys = structured ? Object.keys(structured).join(',') : '(no structured)';
+    setDiag('ontoolresult', `fired @ ${new Date().toISOString().slice(11, 23)} keys=${keys}`);
+
     if (!structured) return;
 
     // open_study carries ui_meta.initialData in its result.
@@ -70,6 +74,7 @@ async function main(): Promise<void> {
       | { initialData?: ViewerInitialData }
       | undefined;
     if (uiMeta?.initialData) {
+      setDiag('ontoolresult', `loading study ${uiMeta.initialData.studyUid?.slice(0, 16) ?? '?'}…`);
       loadStudyIntoIframe(uiMeta.initialData);
       return;
     }
@@ -99,6 +104,21 @@ async function main(): Promise<void> {
     await app.connect();
     setDiag('app.connect', `ok @ ${new Date().toISOString()}`);
     setStatus(null);
+
+    // DICOM viewers need real vertical space. Claude's inline default is ~150px
+    // which collapses OHIF to nothing. Explicitly announce a larger size and
+    // try to escalate to fullscreen if the host allows it.
+    app.sendSizeChanged({ width: 900, height: 640 }).catch((err) =>
+      console.warn('sendSizeChanged failed:', err),
+    );
+    const ctx = app.getHostContext?.();
+    if (ctx?.availableDisplayModes?.includes('fullscreen')) {
+      app
+        .requestDisplayMode({ mode: 'fullscreen' })
+        .catch((err: unknown) =>
+          console.warn('requestDisplayMode(fullscreen) failed:', err),
+        );
+    }
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);
     console.error('App.connect failed:', err);

@@ -14,7 +14,7 @@ import {
   orthancDicomWebBase,
   type ParsedRef,
 } from '../parser/url.js';
-import { UI_RESOURCE_URI } from '../ui/resource.js';
+import { UI_RESOURCE_URI, getPublicOrigin } from '../ui/resource.js';
 import { setViewState } from '../state/session.js';
 
 export const TOOL_NAME = 'open_study';
@@ -82,6 +82,7 @@ export function register(server: McpServer): void {
           server_id: resolved.server.id,
         });
 
+        const origin = getPublicOrigin();
         const result: OpenStudyResult = {
           study_uid: resolved.studyUid,
           server_id: resolved.server.id,
@@ -92,8 +93,8 @@ export function register(server: McpServer): void {
             initialData: {
               studyUid: resolved.studyUid,
               seriesUid: args.initial_series_uid ?? null,
-              dicomwebBaseUrl: `/dicomweb/${resolved.server.id}`,
-              ohifBasePath: '/ohif/viewer',
+              dicomwebBaseUrl: `${origin}/dicomweb/${resolved.server.id}`,
+              ohifBasePath: `${origin}/ohif/viewer`,
             },
           },
         };
