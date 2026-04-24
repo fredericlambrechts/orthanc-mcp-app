@@ -4,6 +4,7 @@ import { StreamableHTTPServerTransport } from '@modelcontextprotocol/sdk/server/
 import { isInitializeRequest } from '@modelcontextprotocol/sdk/types.js';
 import { createMcpServerInstance, SERVER_INFO } from './mcpServer.js';
 import { dicomwebProxy } from './dicomweb/proxy.js';
+import { ohifPlaceholder } from './ohif/placeholder.js';
 
 const PORT = Number.parseInt(process.env.PORT ?? '3000', 10);
 const HOST = process.env.HOST ?? '0.0.0.0';
@@ -23,6 +24,10 @@ export function createApp(): express.Express {
   // DICOMweb CORS proxy for OHIF -> any configured DICOMweb server.
   // Path shape: /dicomweb/{serverId}/{upstream-path-with-query}
   app.use('/dicomweb', dicomwebProxy);
+
+  // OHIF static bundle. In U6 this is replaced by the real OHIF v3 build.
+  // For now /ohif/viewer renders a placeholder that echoes its query params.
+  app.get('/ohif/viewer', ohifPlaceholder);
 
   app.post('/mcp', handleMcpPost);
   app.get('/mcp', handleMcpGet);
