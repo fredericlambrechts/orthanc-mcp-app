@@ -29,17 +29,18 @@ async function main(): Promise<void> {
     {},
   );
 
+  // On every STATE_UPDATE from OHIF, push the state to the MCP server via
+  // the internal `_record_view_state` tool. The server caches it and
+  // describe_current_view reads from that cache.
   const updateContext = createDebouncedStateUpdater((state: StateUpdate) => {
     app
-      .updateModelContext({
-        content: [
-          {
-            type: 'text',
-            text: JSON.stringify(state),
-          },
-        ],
+      .callServerTool({
+        name: '_record_view_state',
+        arguments: state as Record<string, unknown>,
       })
-      .catch((err: unknown) => console.warn('updateModelContext failed:', err));
+      .catch((err: unknown) =>
+        console.warn('_record_view_state failed:', err),
+      );
   }, 250);
 
   // Tool results arrive via ontoolresult when a tool that renders this

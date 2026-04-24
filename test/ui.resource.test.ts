@@ -94,18 +94,15 @@ describe('open_study tool metadata', () => {
     expect(structured.ui_meta?.initialData.dicomwebBaseUrl).toBe('/dicomweb/orthanc-demo');
   });
 
-  test('returns null studyUid for non-UID references (URL parsing lands in U5)', async () => {
+  test('unparseable references return isError with a structured code', async () => {
     const client = await connectClient();
     const res = await client.callTool({
       name: 'open_study',
-      arguments: { reference: 'https://example.com/studies/abc' },
+      arguments: { reference: 'https://example.com/random/path' },
     });
-    const structured = res.structuredContent as {
-      study_uid: string | null;
-      ui_meta?: { initialData: { studyUid: string | null } };
-    };
-    expect(structured.study_uid).toBeNull();
-    expect(structured.ui_meta?.initialData.studyUid).toBeNull();
+    expect(res.isError).toBe(true);
+    const s = res.structuredContent as { code: string; message: string };
+    expect(s.code).toBe('UNPARSEABLE');
   });
 });
 

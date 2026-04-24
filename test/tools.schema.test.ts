@@ -14,12 +14,13 @@ async function connectClient() {
 }
 
 describe('MCP server - tool registration and schemas', () => {
-  test('lists all six expected tools', async () => {
+  test('lists all expected tools (6 user-facing + 1 internal)', async () => {
     const { client } = await connectClient();
     const res = await client.listTools();
     const names = res.tools.map((t) => t.name).sort();
     expect(names).toEqual(
       [
+        '_record_view_state',
         'describe_current_view',
         'list_dicom_servers',
         'list_public_datasets',
