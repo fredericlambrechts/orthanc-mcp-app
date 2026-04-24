@@ -1,7 +1,11 @@
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
+import { RESOURCE_MIME_TYPE } from '@modelcontextprotocol/ext-apps/server';
 import { registerAllTools } from './tools/register.js';
 import { registerViewerResource, getPublicOrigin } from './ui/resource.js';
 import { VERSION } from './version.js';
+
+// Extension id for MCP Apps UI capability (per ext-apps spec 2026-01-26).
+const MCP_UI_EXTENSION = 'io.modelcontextprotocol/ui';
 
 export const SERVER_INFO = {
   name: 'orthanc-mcp-app',
@@ -36,6 +40,16 @@ export function createMcpServerInstance(): McpServer {
         tools: {},
         resources: {},
         logging: {},
+        // Advertise MCP Apps widget support. Without this, hosts that respect
+        // capability negotiation (Claude.ai, Claude Desktop) will NOT render
+        // our ui://viewer resource even though the tool declares
+        // _meta.ui.resourceUri. Per the ext-apps spec, this goes under
+        // `extensions.<namespace>` with a mimeTypes allowlist.
+        extensions: {
+          [MCP_UI_EXTENSION]: {
+            mimeTypes: [RESOURCE_MIME_TYPE],
+          },
+        },
       },
     },
   );
