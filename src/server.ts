@@ -3,6 +3,7 @@ import { randomUUID } from 'node:crypto';
 import { StreamableHTTPServerTransport } from '@modelcontextprotocol/sdk/server/streamableHttp.js';
 import { isInitializeRequest } from '@modelcontextprotocol/sdk/types.js';
 import { createMcpServerInstance, SERVER_INFO } from './mcpServer.js';
+import { dicomwebProxy } from './dicomweb/proxy.js';
 
 const PORT = Number.parseInt(process.env.PORT ?? '3000', 10);
 const HOST = process.env.HOST ?? '0.0.0.0';
@@ -18,6 +19,10 @@ export function createApp(): express.Express {
   app.get('/health', (_req: Request, res: Response) => {
     res.json({ ok: true, name: SERVER_INFO.name, version: SERVER_INFO.version });
   });
+
+  // DICOMweb CORS proxy for OHIF -> any configured DICOMweb server.
+  // Path shape: /dicomweb/{serverId}/{upstream-path-with-query}
+  app.use('/dicomweb', dicomwebProxy);
 
   app.post('/mcp', handleMcpPost);
   app.get('/mcp', handleMcpGet);
