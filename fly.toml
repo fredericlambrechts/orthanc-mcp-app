@@ -16,9 +16,12 @@ kill_timeout = "5s"
 [http_service]
   internal_port = 3000
   force_https = true
-  auto_stop_machines = "stop"
+  # Keep one machine warm so demos don't pay the cold-start tax (~5-15s).
+  # Cost: ~$4/month for a shared-cpu-1x always-on machine, well inside the
+  # Fly Hobby free-tier allowance. Revisit if traffic stays near zero.
+  auto_stop_machines = "suspend"
   auto_start_machines = true
-  min_machines_running = 0
+  min_machines_running = 1
   processes = ["app"]
 
   [[http_service.checks]]
