@@ -105,20 +105,12 @@ async function main(): Promise<void> {
     setDiag('app.connect', `ok @ ${new Date().toISOString()}`);
     setStatus(null);
 
-    // DICOM viewers need real vertical space. Claude's inline default is ~150px
-    // which collapses OHIF to nothing. Explicitly announce a larger size and
-    // try to escalate to fullscreen if the host allows it.
+    // DICOM viewers need real vertical space. Claude's inline default is
+    // ~150px which collapses OHIF to nothing. Announce a larger inline size
+    // so the host gives us enough room without forcing fullscreen.
     app.sendSizeChanged({ width: 900, height: 640 }).catch((err) =>
       console.warn('sendSizeChanged failed:', err),
     );
-    const ctx = app.getHostContext?.();
-    if (ctx?.availableDisplayModes?.includes('fullscreen')) {
-      app
-        .requestDisplayMode({ mode: 'fullscreen' })
-        .catch((err: unknown) =>
-          console.warn('requestDisplayMode(fullscreen) failed:', err),
-        );
-    }
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);
     console.error('App.connect failed:', err);

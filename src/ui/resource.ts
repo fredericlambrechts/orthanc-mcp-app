@@ -4,7 +4,7 @@ import { fileURLToPath } from 'node:url';
 import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { registerAppResource } from '@modelcontextprotocol/ext-apps/server';
 
-export const UI_RESOURCE_URI = 'ui://viewer-v5';
+export const UI_RESOURCE_URI = 'ui://viewer-v8';
 
 // Production build output from `npm run build:ui`. Located one level up from
 // the compiled src/ui/ directory: `dist/ui/index.html`.
@@ -30,7 +30,7 @@ const FALLBACK_HTML = `<!doctype html>
 </body>
 </html>`;
 
-async function loadWidgetHtml(): Promise<string> {
+export async function loadWidgetHtml(): Promise<string> {
   for (const path of [PROD_WIDGET_PATH, DEV_WIDGET_PATH]) {
     try {
       const html = await readFile(path, 'utf8');

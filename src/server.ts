@@ -1,4 +1,8 @@
-import express, { type Request, type Response } from 'express';
+import express, {
+  type Request,
+  type Response,
+  type NextFunction,
+} from 'express';
 import { randomUUID } from 'node:crypto';
 import { dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -9,7 +13,7 @@ import { dicomwebProxy } from './dicomweb/proxy.js';
 import { ohifPlaceholder } from './ohif/placeholder.js';
 import { createOhifStaticRouter, hasOhifBundle } from './ohif/static.js';
 import { clearViewState } from './state/session.js';
-import { getPublicOrigin } from './ui/resource.js';
+import { getPublicOrigin, loadWidgetHtml } from './ui/resource.js';
 
 function getPublicOriginSafe(): string {
   try {
@@ -28,6 +32,23 @@ const transports: Record<string, StreamableHTTPServerTransport> = {};
 export function createApp(): express.Express {
   const app = express();
   app.use(express.json({ limit: '2mb' }));
+
+  // Allow Claude's MCP Apps widget (loaded under a `require-corp` COEP on
+  // claudemcpcontent.com) to embed our resources. Without this header Chrome
+  // refuses to load our OHIF SPA inside the widget's iframe and the user
+  // sees "This content is blocked. Contact the site owner to fix the issue."
+  //
+  // For nested iframes specifically (not just subresources), CORP alone is
+  // not sufficient: the embedded document must ALSO opt into COEP. So we
+  // emit both headers on every response.
+  //
+  // Setting these unconditionally is safe: our surface is a public demo, no
+  // credentials are attached to cross-origin requests.
+  app.use((_req: Request, res: Response, next: NextFunction) => {
+    res.setHeader('Cross-Origin-Resource-Policy', 'cross-origin');
+    res.setHeader('Cross-Origin-Embedder-Policy', 'require-corp');
+    next();
+  });
 
   // Health check - for Fly.io / any uptime monitor.
   app.get('/health', (_req: Request, res: Response) => {
@@ -105,6 +126,17 @@ export function createApp(): express.Express {
   <p class="disclaimer">For demonstration, education, and non-diagnostic use only. Not a medical device. Powered by <a href="https://www.orthanc-server.com/">Orthanc</a>, the open-source DICOM server.</p>
 </body>
 </html>`);
+  });
+
+  // Plain-HTTP mirror of the widget bundle. Normally served only via
+  // `resources/read ui://viewer-v5` over MCP, but exposing it at a stable
+  // URL lets e2e tests embed the widget in sandboxed iframes without
+  // reimplementing the MCP handshake. Same payload either way.
+  app.get('/widget.html', async (_req: Request, res: Response) => {
+    const html = await loadWidgetHtml();
+    res.setHeader('Content-Type', 'text/html; charset=utf-8');
+    res.setHeader('Cache-Control', 'no-store');
+    res.send(html);
   });
 
   // DICOMweb CORS proxy for OHIF -> any configured DICOMweb server.
