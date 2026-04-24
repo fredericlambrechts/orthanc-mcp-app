@@ -81,10 +81,15 @@
   <body>
     <div id="placeholder">
       <div>
-        <h1>DICOM viewer</h1>
+        <h1>DICOM viewer - widget build v0.2.0</h1>
         <p>Ask Claude to open a DICOM study to load it here.</p>
         <p>Any DICOMweb URL works - paste a study link or provide a StudyInstanceUID.</p>
         <p class="disclaimer">For demonstration, education, and non-diagnostic use only.</p>
+        <p id="diag" style="margin-top:24px; font-family:ui-monospace,monospace; font-size:11px; color:#6b7fff; line-height:1.6;">
+          widget js: loading...<br/>
+          app.connect: waiting<br/>
+          ontoolresult: waiting
+        </p>
       </div>
     </div>
     <div id="status" class="hidden"></div>

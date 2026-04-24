@@ -23,7 +23,18 @@ declare global {
   }
 }
 
+function setDiag(line: string, value: string): void {
+  const el = document.getElementById('diag');
+  if (!el) return;
+  el.innerHTML = el.innerHTML.replace(
+    new RegExp(`${line}:[^<]*`),
+    `${line}: ${value}`,
+  );
+}
+
 async function main(): Promise<void> {
+  setDiag('widget js', 'running');
+
   const app = new App(
     { name: 'orthanc-mcp-app/viewer', version: '0.1.0' },
     {},
@@ -48,6 +59,7 @@ async function main(): Promise<void> {
   app.ontoolresult = (params: {
     result?: { structuredContent?: unknown };
   }) => {
+    setDiag('ontoolresult', `fired @ ${new Date().toISOString()}`);
     const structured = params.result?.structuredContent as
       | Record<string, unknown>
       | undefined;
@@ -83,11 +95,15 @@ async function main(): Promise<void> {
   });
 
   try {
+    setDiag('app.connect', 'calling...');
     await app.connect();
+    setDiag('app.connect', `ok @ ${new Date().toISOString()}`);
     setStatus(null);
   } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err);
     console.error('App.connect failed:', err);
-    setStatus(`Bridge error: ${err instanceof Error ? err.message : String(err)}`);
+    setDiag('app.connect', `FAILED: ${msg}`);
+    setStatus(`Bridge error: ${msg}`);
   }
 
   window.__dicomMcpApp = app;
