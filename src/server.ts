@@ -153,6 +153,17 @@ async function handleMcpPost(req: Request, res: Response): Promise<void> {
 
     if (sessionId && transports[sessionId]) {
       transport = transports[sessionId];
+    } else if (sessionId && !transports[sessionId]) {
+      // Per MCP Streamable HTTP spec, return 404 so the client knows its
+      // cached session is gone and must re-issue `initialize`. Returning 400
+      // causes clients like Claude.ai to retry with the same stale session id
+      // and eventually give up.
+      res.status(404).json({
+        jsonrpc: '2.0',
+        error: { code: -32001, message: 'Session not found' },
+        id: null,
+      });
+      return;
     } else if (!sessionId && isInitializeRequest(req.body)) {
       // One-time log of initialize params so we can see what clients advertise.
       console.log('[mcp-init]', JSON.stringify({
@@ -204,10 +215,18 @@ async function handleMcpPost(req: Request, res: Response): Promise<void> {
 
 async function handleMcpGet(req: Request, res: Response): Promise<void> {
   const sessionId = req.headers['mcp-session-id'] as string | undefined;
-  if (!sessionId || !transports[sessionId]) {
+  if (!sessionId) {
     res.status(400).json({
       jsonrpc: '2.0',
-      error: { code: -32000, message: 'Bad Request: no active session' },
+      error: { code: -32000, message: 'Bad Request: missing session id' },
+      id: null,
+    });
+    return;
+  }
+  if (!transports[sessionId]) {
+    res.status(404).json({
+      jsonrpc: '2.0',
+      error: { code: -32001, message: 'Session not found' },
       id: null,
     });
     return;
@@ -217,10 +236,18 @@ async function handleMcpGet(req: Request, res: Response): Promise<void> {
 
 async function handleMcpDelete(req: Request, res: Response): Promise<void> {
   const sessionId = req.headers['mcp-session-id'] as string | undefined;
-  if (!sessionId || !transports[sessionId]) {
+  if (!sessionId) {
     res.status(400).json({
       jsonrpc: '2.0',
-      error: { code: -32000, message: 'Bad Request: no active session' },
+      error: { code: -32000, message: 'Bad Request: missing session id' },
+      id: null,
+    });
+    return;
+  }
+  if (!transports[sessionId]) {
+    res.status(404).json({
+      jsonrpc: '2.0',
+      error: { code: -32001, message: 'Session not found' },
       id: null,
     });
     return;
