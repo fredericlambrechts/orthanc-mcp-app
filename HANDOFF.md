@@ -1,109 +1,195 @@
 ---
-title: Handoff - manual steps before deploy
+title: Handoff - widget rendering debug in progress
 date: 2026-04-24
-status: ready-for-fred
+status: blocked on widget mount
+last_session: 2026-04-24 afternoon
 ---
 
-# Handoff
+# Handoff - pick up here in a fresh session
 
-U1-U6 are complete on the `feat/mvp` branch. 91 passing tests, local production build verified. The remaining work is manual and requires your accounts.
+## Quick summary
 
-## 1. Run the two probes (~15 minutes)
+**MVP shipped and deployed.** MCP tools work end-to-end. **One blocker:** the MCP Apps widget mounts in Claude.ai for a fraction of a second then disappears. All wire-level plumbing is correct. Need to diagnose why Claude's iframe renderer tears down our widget.
 
-These were gated in the plan and need your Claude.ai / Cowork accounts. Results record to [probes/RESULTS.md](probes/RESULTS.md).
+- **Prod URL:** https://orthanc-mcp-app.fly.dev
+- **MCP endpoint (original):** https://orthanc-mcp-app.fly.dev/mcp
+- **MCP endpoint (alias for cache-bust):** https://orthanc-mcp-app.fly.dev/mcp-v2
+- **GitHub:** https://github.com/fredericlambrechts/orthanc-mcp-app
+- **Current branch:** `main` (PR #1 merged; debug commits direct to main)
+- **Prod version:** `0.2.0-widget`
+- **Latest diagnostic commit:** `75da19f` - in-widget diagnostic panel
 
-### Probe A - threejs-server in Claude.ai
+## What works
 
-Proves a WebGL MCP App widget renders inside Claude.ai at all. Must pass before deploy.
+1. `/health` returns 200 with version + ohif_bundled flag
+2. `/mcp` and `/mcp-v2` both handle full MCP Streamable HTTP protocol
+3. Tools: all 7 register, callable, correct response shapes
+4. `/dicomweb/orthanc-demo/*` proxy works against `orthanc.uclouvain.be/demo/dicom-web/`
+5. URL parser handles all 5 reference shapes + SSRF/auth rejections
+6. Server-side state sync (open_study pre-populates, describe_current_view reads)
+7. Assets + favicon + OG meta on root (but Claude.ai's UI uses a curated registry, so custom connectors always show generic globe regardless)
+8. `resources/read ui://viewer` returns 262 KB built HTML with inlined JS bundle
+9. Server advertises `extensions.io.modelcontextprotocol/ui` with `mimeTypes: ["text/html;profile=mcp-app"]`
+10. Logs confirm Claude DOES fetch `resources/read` for `ui://viewer` AND calls `tools/call open_study` - the protocol handshake completes
+
+## What doesn't work (the blocker)
+
+**Widget iframe does not persist in Claude.ai web or Claude Desktop.** Fred reports:
+- "For a fraction of a second it gave the impression that it was going to load a widget"
+- Final state: text-only tool call output, no visible iframe
+
+## All known facts about the failure
+
+- Fly logs show Claude fetching `resources/read` for `ui://viewer` - so Claude IS loading the widget HTML
+- Fly logs show `tools/call open_study` succeeds - tool returns proper `_meta.ui.resourceUri` + `structuredContent`
+- Claude.ai web console (top frame) shows:
+  - `VM14:29 Sending message / Parsed message` - repeated many times → **our widget's ext-apps App class IS executing and posting messages**
+  - `Ignoring message from unknown source MessageEvent` - repeated - may be Intercom/Datadog noise, unclear
+  - `[MCP Apps] oncalltool handler replaced` - Claude's internal warning, unclear if relevant
+  - `[COMPLETION] Starting completion request (attempt 1..5)` - Claude retrying completions, widget likely holding back the chat
+- Fred did NOT yet test the 0.2.0-widget diagnostic deployment (commit `75da19f`) - he hit the session limit before running the test
+
+## Current diagnostic state (deployed but untested)
+
+Commit `75da19f` deployed a visual diagnostic panel inside the widget placeholder. When the widget renders (even for a fraction of a second), the placeholder now shows:
+
+- `widget js: loading...` (initial state from HTML)
+- `widget js: running` (when the bundled JS executes)
+- `app.connect: calling...` / `app.connect: ok @ <time>` / `app.connect: FAILED: <error>`
+- `ontoolresult: waiting` / `ontoolresult: fired @ <time>`
+
+Also added `/mcp-v2` alias route because Claude.ai fingerprints connectors by URL and caches serverInfo/permissions per URL. Remove+re-add at the same URL does NOT force a fresh initialize handshake. The alias gives the client a clean slate.
+
+## Exact next steps (for fresh session)
+
+### Step 1 - test with the new diagnostic
+
+Ask Fred to:
+
+1. In Claude.ai → Settings → Connectors, **Remove** the existing Orthanc connector
+2. Add a new custom connector with URL: `https://orthanc-mcp-app.fly.dev/mcp-v2` (note the `-v2`)
+3. Open DevTools (F12) BEFORE sending the prompt
+4. Paste this in top-level console to catch iframe teardowns:
+   ```js
+   const obs = new MutationObserver(muts => {
+     for (const m of muts) for (const n of m.removedNodes) {
+       if (n.tagName === 'IFRAME') {
+         console.log('[iframe removed]', n.src || n.srcdoc?.slice(0, 100), new Error().stack);
+       }
+     }
+   });
+   obs.observe(document.body, {childList: true, subtree: true});
+   console.log('[iframe observer] armed');
+   ```
+5. Send: *"Show me the BRAINIX brain MR study."*
+6. Screenshot the flicker
+7. Screenshot console - especially `[iframe removed]` entries and any widget-frame errors
+
+### Step 2 - interpret
+
+- If widget shows `widget js: running` in the flash → our JS ran. Check `app.connect` line:
+  - `ok @ <time>` → handshake succeeded, something else killed the iframe (Claude-side tear-down)
+  - `FAILED: <error>` → the ext-apps handshake failed, read the error
+- If widget stays on `widget js: loading...` → script blocked (CSP, sandbox permissions). Check DevTools Console tab for `Refused to execute...` errors
+- If widget never appears at all → Claude filtered the resource before rendering
+
+### Step 3 - if handshake fails
+
+Likely causes to investigate:
+- **Sandbox permissions** - widget needs `allow-scripts` + `allow-same-origin` + possibly `allow-modals`
+- **CSP from Claude's host** - may be stricter than our declared `_meta.ui.csp`
+- **Module script blocking** - our bundle uses `<script type="module" crossorigin>` which some sandbox configs refuse
+- **PostMessage transport target** - `window.parent` might resolve to wrong frame in nested iframe setup
+
+### Step 4 - compare against known-good
+
+The reference example at https://github.com/modelcontextprotocol/ext-apps/tree/main/examples/threejs-server is confirmed working in Claude. Fred hasn't run Probe A yet (MVP-plan §U1) so we don't actually know if ANY custom MCP App widget renders in his Claude.ai account. This is still gated.
+
+Before deep-debugging ours, **run Probe A** to verify Claude.ai even supports custom-connector widget rendering in his account/tier:
 
 ```bash
-# In a separate terminal
 cd /tmp
 git clone https://github.com/modelcontextprotocol/ext-apps.git
 cd ext-apps/examples/threejs-server
-npm install
-npm run dev    # notes which port it uses
-
-# In another terminal
-ngrok http <port>   # grab the https URL
+npm install && npm run dev   # note port
+# another terminal:
+ngrok http <port>
+# install ngrok https URL in Claude.ai, test in chat
 ```
 
-Then in Claude.ai → Settings → Connectors (or Apps) → Add a custom MCP server → paste the ngrok https URL. Invoke it in a chat. Confirm: a WebGL scene renders inline and responds to mouse drag.
+If threejs widget renders: our server has a bug specific to our widget/config.
+If threejs widget doesn't render either: Claude.ai web doesn't support custom-connector widgets in this account/tier. Options narrow to Claude Desktop, submit to directory, or ship without inline widget.
 
-Update `probes/RESULTS.md` with: date, pass/fail, screenshot path.
+## Repo state
 
-### Probe B - same thing in Claude Cowork
+- Branch: `main`
+- All tests passing: 143/143
+- Recent commits (last 10):
 
-Same ngrok URL, same install flow, but in Cowork. Informational - documents whether we can pitch this to Cowork sales/ops users.
+```
+75da19f chore(debug): in-widget diagnostic panel
+fd8d8ec chore(debug): add /mcp-v2 alias
+3d43f13 chore(debug): bump version to 0.2.0-widget, log every POST
+5948e4a fix(mcp-apps): advertise io.modelcontextprotocol/ui server capability
+cbd907c feat(branding): serve favicon directly + root page with OG tags
+53b32ac feat(branding): Orthanc logo in Claude.ai connector UI
+3d3f600 Merge pull request #1 from fredericlambrechts/feat/mvp
+69e6b65 fix(api-contract): correct stale tool descriptions and sync protocol spec
+5ff7e3d fix(reliability,ops): graceful shutdown, wire clearViewState, fail-fast PUBLIC_ORIGIN
+c428e0e fix(security,reliability): harden DICOMweb proxy against traversal, SSRF redirects, hung upstreams
+```
 
-Record outcome.
+## Key files for the next session
 
-## 2. Populate `ohif-dist/` (optional for first deploy)
+- [plan.md](plan.md) - full 6-unit implementation plan (source of truth)
+- [tool-signatures.md](tool-signatures.md) - MCP tool + postMessage spec
+- [feasibility-study.md](feasibility-study.md) - architecture + risks
+- [src/mcpServer.ts](src/mcpServer.ts) - where capability advertisement is set (line 40ish, `extensions.io.modelcontextprotocol/ui`)
+- [src/ui/resource.ts](src/ui/resource.ts) - `ui://viewer` resource registration, CSP meta
+- [ui/src/widget.ts](ui/src/widget.ts) - widget entry, App class init, diagnostic updates
+- [ui/src/bridge.ts](ui/src/bridge.ts) - OHIF iframe bridge helpers
+- [ui/index.html](ui/index.html) - widget shell with diagnostic panel (v0.2.0 build)
+- [src/server.ts](src/server.ts) - Express routes, static mounts, /mcp + /mcp-v2 handlers
+- [fly.toml](fly.toml) - Fly config (NOTE: `auto_stop_machines = "stop"`, `min_machines_running = 0` - cold starts are slow; Fred rejected a warm-machine change in this session)
 
-Without this, `/ohif/viewer` serves a placeholder that echoes query params. Tools still work, MCP plumbing still works, but no actual DICOM pixels render.
-
-Three options - pick one:
-
-- **Easiest (punt to v2):** deploy without OHIF. The demo still shows MCP + DICOMweb + tool calls. Pixel rendering is a follow-up.
-- **Fastest (temporary CDN):** edit `src/tools/open_study.ts` `ohifBasePath` to `https://viewer.ohif.org/viewer` and add that origin to `src/ui/resource.ts` `frameDomains`. Violates Path A's single-origin principle but gets pixels on screen in a day.
-- **Proper (self-hosted):** clone OHIF Viewers, `yarn build`, copy `platform/app/dist/*` into `ohif-dist/`, redeploy. Budget 2-3 hours for first-time OHIF build.
-
-See [scripts/download-ohif.sh](scripts/download-ohif.sh) for details.
-
-## 3. Deploy to Fly.io (~10 minutes)
+## Fly.io operations
 
 ```bash
+# Check logs
 cd /Users/fredericlambrechts/code/orthanc-mcp-app
-fly apps create orthanc-mcp-app
-fly secrets set PUBLIC_ORIGIN=https://orthanc-mcp-app.fly.dev
-fly deploy
-```
+fly logs --no-tail
 
-Watch for the deploy URL. Hit `/health` to confirm it's up:
+# Filter for MCP traffic
+fly logs --no-tail | grep -E "mcp-init|mcp-post"
 
-```bash
+# Deploy a change
+fly deploy --now
+
+# Health check
 curl https://orthanc-mcp-app.fly.dev/health
-# {"ok":true,"name":"orthanc-mcp-app","version":"0.1.0","ohif_bundled":false}
 ```
 
-## 4. Install in Claude.ai (~2 minutes)
+## Context from this session
 
-1. Claude.ai → Settings → Connectors.
-2. Add custom MCP server → `https://orthanc-mcp-app.fly.dev/mcp`.
-3. Install and approve.
-4. In a new chat: *"Show me the BRAINIX study."*
+- Started session post-PR #1 merge. Added Orthanc branding (logo) - discovered Claude.ai uses curated registry for icons, custom connectors show generic globe (cosmetic, not blocking)
+- Attempted widget render; discovered capability mismatch - fixed in commit `5948e4a` by adding `extensions.io.modelcontextprotocol/ui` to server capabilities
+- Fred reconnected multiple times but Claude.ai's URL-keyed cache kept reusing old serverInfo - added `/mcp-v2` alias as workaround
+- After alias + capability fix, widget flickers but doesn't persist
+- Added in-widget diagnostic panel to show state during flicker
+- Fred hit context limit before running the diagnostic test
 
-If `ohif_bundled: true` you'll see the real OHIF viewer. If false, you'll see the placeholder page echoing the study UID and DICOMweb base URL.
+## Deferred items (also in [plan.md](plan.md) § "Deferred")
 
-## 5. Record the Loom
+- Run Probe A (threejs-server in Claude.ai) - gated in U1 but skipped
+- Run Probe B (threejs-server in Cowork) - informational
+- Populate `ohif-dist/` for real OHIF pixel rendering - blocked on widget mount working first
+- Record Loom (script at [demo/script.md](demo/script.md))
+- Blog post (outline at [demo/blog-outline.md](demo/blog-outline.md))
+- Heads-up to Benoit Crickboom (Orthanc team lead, Liège) - using their demo server as default corpus in a public Claude app, courtesy DM before any public launch
+- Remaining P2/P3 from [code review](https://github.com/fredericlambrechts/orthanc-mcp-app/pull/1) - can wait until widget renders
 
-Script is at [demo/script.md](demo/script.md). 60 seconds. Use whatever recorder you prefer - QuickTime is fine if you don't want to sign up for Loom yet.
+## Cost / operational state
 
-## 6. Write the blog post (when the demo feels right)
-
-Outline is at [demo/blog-outline.md](demo/blog-outline.md). 800-1200 words. Ships through LinkedIn first, then cross-post to Hacker News / /r/medicalimaging.
-
-## Done state
-
-When all of the above is green:
-
-- PR merged (or feat/mvp deployed directly)
-- Fly.io instance is running and reachable
-- MCP App installed in your Claude.ai account
-- Loom recorded and uploaded
-- Blog post drafted
-
-Then this is a usable demo asset for the ECR follow-up conversations and next pilot intro.
-
----
-
-## Things deferred (not part of v1)
-
-- STOW-RS upload
-- Authenticated PACS connections (requires BAA/DPA compliance review)
-- Annotations / measurements / segmentation overlays
-- Multi-study comparison and hanging protocols
-- Export snapshot to chat
-- Cornerstone3D-only minimal bespoke viewer (alternative to OHIF)
-
-See [plan.md](plan.md) § "Deferred to Follow-Up Work".
+- Fly.io: single shared-cpu-1x machine, auto-stop when idle. First request after idle = 5-15s cold start. Fred rejected a proposed change to `min_machines_running = 1` in this session.
+- Monthly cost estimate: ~$0-5 given low traffic. Fly $5 Hobby credit covers it.
+- No OAuth on our `/mcp` endpoint yet - anyone can use it as a DICOMweb CORS proxy to Orthanc demo. Acceptable for v1 demo per the plan.
