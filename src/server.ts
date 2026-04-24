@@ -125,6 +125,14 @@ export function createApp(): express.Express {
   app.get('/mcp', handleMcpGet);
   app.delete('/mcp', handleMcpDelete);
 
+  // Alias routes. Claude.ai fingerprints connectors by URL and caches
+  // serverInfo / session state per URL, so remove+re-add at the same URL
+  // doesn't force a fresh initialize. Adding under a new path gives the
+  // client a clean slate.
+  app.post('/mcp-v2', handleMcpPost);
+  app.get('/mcp-v2', handleMcpGet);
+  app.delete('/mcp-v2', handleMcpDelete);
+
   return app;
 }
 
