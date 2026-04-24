@@ -230,24 +230,51 @@ Input: string
 
 Server matching rule: if the host matches a configured `base_url` origin, use that `server_id`. Otherwise, register an ad-hoc server entry and proxy through the MCP server's `/dicomweb/<host-hash>/*` path. Ad-hoc servers only accept anonymous endpoints in v1 - any URL that looks authenticated (presence of `Authorization` hint, `/auth/` segment, or `token=` param) returns an error refusing to connect.
 
-Rejection list for v1: no `file://`, no `data:`, no non-HTTP schemes, no IP-literal URLs (force hostnames so we can reason about where data is flowing).
+Rejection list for v1: no `file://`, no `data:`, no non-HTTP schemes, no IP-literal URLs, no bracketed IPv6 (`[::1]`), no private/loopback/link-local ranges (RFC1918, 127.0.0.0/8, 169.254.0.0/16 including AWS/GCP metadata, 100.64.0.0/10 CGNAT, 0.0.0.0/8), no cloud-metadata or kubernetes service hostnames (`metadata.google.internal`, `*.internal`, `*.local`, `*.cluster.local`, `kubernetes.default.svc`), no authentication hints (`?token=` / `?TOKEN=` / `?api_key=` / `?jwt=` / `?signature=` case-insensitive, `/auth/` in path or fragment, `user:pass@` in URL authority), and no cross-host redirects from the Orthanc REST lookup.
 
-## postMessage protocol (widget <-> host <-> server)
+## postMessage and widget ↔ server protocol
+
+**Widget boots via `ui_meta` in the `open_study` tool result (not via postMessage).** The widget reads `structuredContent.ui_meta.initialData` from the tool result it receives via `App.ontoolresult` and navigates its nested iframe. There is no SET_STUDY postMessage - the widget controls the iframe `src` directly.
 
 ```
-// Server -> Widget (via host relay)
-{ type: "SET_STUDY", studyUid, dicomwebBaseUrl, seriesUid? }
-{ type: "SET_VIEW", seriesUid?, sliceIndex?, windowCenter?, windowWidth? }
+// Tool result from open_study (via App.ontoolresult)
+{
+  study_uid, server_id, reference_kind, ui_resource,
+  ui_meta: {
+    resourceUri: "ui://viewer",
+    initialData: {
+      studyUid: string,
+      seriesUid: string | null,
+      dicomwebBaseUrl: string,     // e.g. "/dicomweb/orthanc-demo"
+      ohifBasePath: string         // e.g. "/ohif/viewer"
+    }
+  }
+}
 
-// Widget -> Server (via host relay)
-{ type: "STATE_UPDATE", studyUid, seriesUid, sliceIndex, slice_count, wc, ww, modality, ... }
-{ type: "ERROR", code: "LOAD_FAILED" | "CORS" | "NOT_FOUND", detail }
+// Tool result from set_view (via App.ontoolresult)
+{
+  applied: true,
+  resolved: {                       // widget forwards these to the OHIF iframe
+    series_uid?: string,
+    slice_index?: number,
+    window_center?: number,
+    window_width?: number,
+    preset?: WindowLevelPreset
+  }
+}
 
-// Widget -> Server (tool call back, via host's callServerTool bridge)
-{ tool: "log_event", args: { name: "window_level_changed", wc, ww } }
+// OHIF iframe -> widget (browser postMessage; STATE_UPDATE only)
+{ type: "STATE_UPDATE",
+  study_uid?, series_uid?, modality?,
+  slice_index?, slice_count?,
+  window_center?, window_width?, preset?,
+  slice_thickness_mm? }
+
+// Widget -> server (via App.callServerTool)
+{ tool: "_record_view_state", args: StateUpdate }
 ```
 
-The widget debounces `STATE_UPDATE` to 250 ms to avoid flooding the MCP server during scroll.
+The widget debounces `STATE_UPDATE` → `_record_view_state` to 250 ms to avoid flooding the server during scroll. Field names on the widget → server channel are snake_case to match server-side `ViewState`. No `ERROR` postMessage handler in v1 - widget surfaces load failures via the status banner only.
 
 ## Example chat flow (actual tool calls)
 
