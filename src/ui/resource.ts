@@ -4,7 +4,7 @@ import { fileURLToPath } from 'node:url';
 import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { registerAppResource } from '@modelcontextprotocol/ext-apps/server';
 
-export const UI_RESOURCE_URI = 'ui://viewer-v8';
+export const UI_RESOURCE_URI = 'ui://viewer-v11';
 
 // Production build output from `npm run build:ui`. Located one level up from
 // the compiled src/ui/ directory: `dist/ui/index.html`.

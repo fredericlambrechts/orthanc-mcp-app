@@ -76,16 +76,126 @@ export function buildViewerUrl(data: ViewerInitialData): string {
   return `${base}?${params.toString()}`;
 }
 
-export function loadStudyIntoIframe(data: ViewerInitialData): void {
-  const iframe = document.getElementById(VIEWER_ID) as HTMLIFrameElement | null;
-  if (!iframe) return;
+/**
+ * Render a "launch viewer" card in the widget body.
+ *
+ * Why a card, not an embedded OHIF:
+ *   Claude's MCP Apps widget CSP only propagates our declared
+ *   connectDomains and resourceDomains (surfaced in the widget URL as
+ *   `connect-src` and `resource-src` params). It does NOT propagate
+ *   frameDomains, and cross-origin navigation of the widget iframe is
+ *   likewise blocked by the parent-page frame-src. Net effect: we cannot
+ *   embed or navigate to our own OHIF origin from inside the widget.
+ *
+ *   The ext-apps API exposes `app.openLink(url)` which asks the host
+ *   (Claude) to open the URL externally. That's the supported escape
+ *   hatch for cross-origin launches. We build a card with study metadata
+ *   + a big button that triggers openLink.
+ *
+ * The caller passes the App instance so the click handler can reach the
+ * host. If openLink isn't supported by the host, the button falls back
+ * to a plain <a href target="_blank"> (which Claude may or may not
+ * allow to open, but at minimum makes the URL copy-paste-able).
+ */
+export function renderStudyLaunchCard(
+  data: ViewerInitialData,
+  opts: { openLink?: (url: string) => Promise<unknown> } = {},
+): void {
   const target = buildViewerUrl(data);
-  if (iframe.src !== target) {
-    iframe.src = target;
-  }
-  hidePlaceholder();
-  setStatus(`Loading study ${shortenUid(data.studyUid)}…`);
-  iframe.addEventListener('load', () => setStatus(null), { once: true });
+  const placeholder = document.getElementById(PLACEHOLDER_ID);
+  if (!placeholder) return;
+
+  // Nuke the existing placeholder contents and build the launch card in
+  // place. We don't hide the placeholder because it occupies the widget's
+  // full area and the card IS what we want to show.
+  placeholder.innerHTML = '';
+  placeholder.classList.remove('hidden');
+
+  const card = document.createElement('div');
+  card.style.cssText = [
+    'max-width:520px',
+    'text-align:center',
+    'padding:24px',
+    'font-family:system-ui,-apple-system,Segoe UI,Roboto,sans-serif',
+  ].join(';');
+
+  const title = document.createElement('h1');
+  title.textContent = 'DICOM study ready';
+  title.style.cssText = 'font-size:20px;font-weight:600;margin:0 0 8px;color:#ececec';
+  card.appendChild(title);
+
+  const subtitle = document.createElement('p');
+  subtitle.textContent = `Study ${shortenUid(data.studyUid)} - open in the OHIF viewer to scroll slices and switch series.`;
+  subtitle.style.cssText = 'color:#a3a3a3;font-size:13px;margin:0 0 24px';
+  card.appendChild(subtitle);
+
+  const btn = document.createElement('button');
+  btn.type = 'button';
+  btn.textContent = 'Open in OHIF viewer ↗';
+  btn.style.cssText = [
+    'background:#6b7fff',
+    'color:#fff',
+    'border:0',
+    'border-radius:6px',
+    'padding:14px 24px',
+    'font-size:14px',
+    'font-weight:600',
+    'cursor:pointer',
+    'display:inline-block',
+  ].join(';');
+  btn.addEventListener('click', async () => {
+    setStatus('Opening viewer…');
+    try {
+      if (opts.openLink) {
+        await opts.openLink(target);
+        setStatus(null);
+      } else {
+        // Fallback: standard link. Works only if sandbox allows popups.
+        window.open(target, '_blank', 'noopener,noreferrer');
+      }
+    } catch (err) {
+      setStatus(
+        `Launch failed: ${err instanceof Error ? err.message : String(err)}`,
+      );
+    }
+  });
+  card.appendChild(btn);
+
+  const fallback = document.createElement('p');
+  fallback.style.cssText =
+    'margin:20px 0 0;color:#8a8a8a;font-size:11px;word-break:break-all';
+  const link = document.createElement('a');
+  link.href = target;
+  link.target = '_blank';
+  link.rel = 'noopener';
+  link.textContent = target;
+  link.style.cssText = 'color:#8a8a8a;text-decoration:underline';
+  fallback.appendChild(document.createTextNode('Or copy: '));
+  fallback.appendChild(link);
+  card.appendChild(fallback);
+
+  const disclaimer = document.createElement('p');
+  disclaimer.textContent =
+    'For demonstration, education, and non-diagnostic use only.';
+  disclaimer.style.cssText =
+    'margin:16px 0 0;color:#8a8a8a;font-size:11px;font-style:italic';
+  card.appendChild(disclaimer);
+
+  const wrapper = document.createElement('div');
+  wrapper.appendChild(card);
+  placeholder.appendChild(wrapper);
+
+  setStatus(null);
+}
+
+/**
+ * Back-compat shim. The widget's ontoolresult handler still calls
+ * `loadStudyIntoIframe` by name; keep the symbol stable but forward to
+ * the new card renderer. Callers that have an App instance should pass
+ * its `openLink` bound method via the options object.
+ */
+export function loadStudyIntoIframe(data: ViewerInitialData): void {
+  renderStudyLaunchCard(data);
 }
 
 export function sendSetViewToIframe(cmd: SetViewCommand): void {

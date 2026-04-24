@@ -6,8 +6,8 @@ import { App } from '@modelcontextprotocol/ext-apps';
 import {
   buildViewerUrl,
   createDebouncedStateUpdater,
-  loadStudyIntoIframe,
   parseOhifStateMessage,
+  renderStudyLaunchCard,
   sendSetViewToIframe,
   setStatus,
   type SetViewCommand,
@@ -74,8 +74,18 @@ async function main(): Promise<void> {
       | { initialData?: ViewerInitialData }
       | undefined;
     if (uiMeta?.initialData) {
-      setDiag('ontoolresult', `loading study ${uiMeta.initialData.studyUid?.slice(0, 16) ?? '?'}…`);
-      loadStudyIntoIframe(uiMeta.initialData);
+      setDiag('ontoolresult', `rendering launch card for ${uiMeta.initialData.studyUid?.slice(0, 16) ?? '?'}`);
+      renderStudyLaunchCard(uiMeta.initialData, {
+        openLink: (url) =>
+          app
+            .openLink({ url })
+            .catch((err) => {
+              console.warn('openLink failed:', err);
+              // Fall back to window.open in case the host didn't advertise
+              // openLinks capability.
+              window.open(url, '_blank', 'noopener,noreferrer');
+            }),
+      });
       return;
     }
 
@@ -105,10 +115,9 @@ async function main(): Promise<void> {
     setDiag('app.connect', `ok @ ${new Date().toISOString()}`);
     setStatus(null);
 
-    // DICOM viewers need real vertical space. Claude's inline default is
-    // ~150px which collapses OHIF to nothing. Announce a larger inline size
-    // so the host gives us enough room without forcing fullscreen.
-    app.sendSizeChanged({ width: 900, height: 640 }).catch((err) =>
+    // We render a compact launch card, not a full viewer. ~300px tall is
+    // enough for the title, subtitle, button, URL row, and disclaimer.
+    app.sendSizeChanged({ width: 720, height: 300 }).catch((err) =>
       console.warn('sendSizeChanged failed:', err),
     );
   } catch (err) {

@@ -164,6 +164,9 @@ export function createApp(): express.Express {
   app.post('/mcp-v2', handleMcpPost);
   app.get('/mcp-v2', handleMcpGet);
   app.delete('/mcp-v2', handleMcpDelete);
+  app.post('/mcp-v3', handleMcpPost);
+  app.get('/mcp-v3', handleMcpGet);
+  app.delete('/mcp-v3', handleMcpDelete);
 
   return app;
 }
