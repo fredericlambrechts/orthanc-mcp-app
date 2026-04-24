@@ -10,10 +10,22 @@ import { StreamableHTTPServerTransport } from '@modelcontextprotocol/sdk/server/
 import { isInitializeRequest } from '@modelcontextprotocol/sdk/types.js';
 import { createMcpServerInstance, SERVER_INFO } from './mcpServer.js';
 import { dicomwebProxy } from './dicomweb/proxy.js';
+import { getServerById } from './config.js';
+import {
+  fetchInstanceBytes,
+  renderDicomToPng,
+  UnsupportedTransferSyntax,
+} from './render/dicomPng.js';
 import { ohifPlaceholder } from './ohif/placeholder.js';
 import { createOhifStaticRouter, hasOhifBundle } from './ohif/static.js';
 import { clearViewState } from './state/session.js';
 import { getPublicOrigin, loadWidgetHtml } from './ui/resource.js';
+
+function parseFloatParam(v: unknown): number | undefined {
+  if (typeof v !== 'string') return undefined;
+  const n = Number(v);
+  return Number.isFinite(n) ? n : undefined;
+}
 
 function getPublicOriginSafe(): string {
   try {
@@ -142,6 +154,51 @@ export function createApp(): express.Express {
   // DICOMweb CORS proxy for OHIF -> any configured DICOMweb server.
   // Path shape: /dicomweb/{serverId}/{upstream-path-with-query}
   app.use('/dicomweb', dicomwebProxy);
+
+  // Server-side DICOM → PNG renderer. The widget embeds an <img> per slice
+  // pointing at this URL; the widget bundle stays tiny (no DICOM decoding in
+  // browser, no web workers, no cornerstone megabytes). Only uncompressed
+  // Little Endian is supported — the only transfer syntax the Orthanc demo
+  // studies (BRAINIX, KNEE, etc.) actually use.
+  app.get(
+    '/render/:serverId/:studyUid/:seriesUid/:instanceUid.png',
+    async (req: Request, res: Response) => {
+      try {
+        const params = req.params as Record<string, string>;
+        const server = getServerById(params.serverId);
+        if (!server) {
+          res.status(404).json({ error: 'unknown server' });
+          return;
+        }
+        const bytes = await fetchInstanceBytes(
+          server.base_url,
+          params.studyUid,
+          params.seriesUid,
+          params.instanceUid,
+        );
+        const wc = parseFloatParam(req.query.wc);
+        const ww = parseFloatParam(req.query.ww);
+        const result = renderDicomToPng(bytes, { windowCenter: wc, windowWidth: ww });
+        res.setHeader('Content-Type', 'image/png');
+        res.setHeader('Cache-Control', 'public, max-age=86400');
+        res.setHeader('X-Transfer-Syntax', result.transferSyntax);
+        res.setHeader('X-Rendered-WC', String(result.windowCenter));
+        res.setHeader('X-Rendered-WW', String(result.windowWidth));
+        res.send(result.png);
+      } catch (err) {
+        if (err instanceof UnsupportedTransferSyntax) {
+          res
+            .status(415)
+            .json({ error: 'unsupported transfer syntax', tsuid: err.tsuid });
+          return;
+        }
+        console.error('[render] error:', err);
+        res.status(500).json({
+          error: err instanceof Error ? err.message : 'render failed',
+        });
+      }
+    },
+  );
 
   // OHIF static bundle. If ohif-dist/ is present (populated by
   // scripts/download-ohif.sh or a bundled build), serve it from /ohif/*.

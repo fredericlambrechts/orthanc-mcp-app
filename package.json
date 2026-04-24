@@ -28,12 +28,15 @@
   "dependencies": {
     "@modelcontextprotocol/ext-apps": "^1.7.0",
     "@modelcontextprotocol/sdk": "^1.29.0",
+    "dicom-parser": "^1.8.21",
     "express": "^5.2.1",
+    "pngjs": "^7.0.0",
     "zod": "^3.23.0"
   },
   "devDependencies": {
     "@types/express": "^5.0.6",
     "@types/node": "^22.0.0",
+    "@types/pngjs": "^6.0.5",
     "playwright": "^1.59.1",
     "tsx": "^4.19.0",
     "typescript": "^5.6.0",

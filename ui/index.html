@@ -5,95 +5,93 @@
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <title>DICOM Viewer</title>
     <style>
-      :root {
-        color-scheme: dark;
+      :root { color-scheme: dark; }
+      html, body {
+        margin: 0; padding: 0;
+        min-height: 560px; height: 100%;
+        background: #0a0a0a; color: #ececec;
+        font: 13px/1.4 -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
       }
-      html,
-      body {
-        margin: 0;
-        padding: 0;
-        min-height: 280px;
-        width: 100%;
-        background: #141414;
-        color: #ececec;
-        font:
-          14px/1.4 -apple-system,
-          BlinkMacSystemFont,
-          'Segoe UI',
-          Roboto,
-          sans-serif;
+      #shell {
+        display: flex; flex-direction: column;
+        height: 100vh; min-height: 560px;
       }
-      #viewer {
-        position: absolute;
-        inset: 0;
-        width: 100%;
-        height: 100%;
-        border: 0;
-        display: block;
-        background: #000;
+      #topbar {
+        display: flex; align-items: center; gap: 12px;
+        padding: 8px 12px;
+        background: #111; border-bottom: 1px solid #222;
       }
-      #status {
-        position: fixed;
-        top: 8px;
-        left: 8px;
-        padding: 6px 10px;
-        background: rgba(0, 0, 0, 0.75);
-        border-radius: 4px;
-        font-size: 12px;
-        pointer-events: none;
-        z-index: 10;
+      #topbar h1 {
+        margin: 0; font-size: 13px; font-weight: 500; color: #ddd;
       }
-      #status.hidden {
-        display: none;
+      #topbar .series {
+        display: flex; gap: 4px; overflow-x: auto;
+        flex: 1; min-width: 0;
       }
+      #topbar .series button {
+        padding: 4px 10px; font-size: 12px;
+        background: #1a1a1a; color: #bbb; border: 1px solid #2a2a2a; border-radius: 3px;
+        cursor: pointer; white-space: nowrap;
+      }
+      #topbar .series button:hover { background: #222; color: #fff; }
+      #topbar .series button.active {
+        background: #2b63d9; color: #fff; border-color: #2b63d9;
+      }
+      #viewport {
+        flex: 1; position: relative; background: #000;
+      }
+      #viewport canvas { display: block; }
+      #overlay {
+        position: absolute; pointer-events: none;
+        inset: 0; padding: 8px 12px;
+        font: 11px ui-monospace, monospace; color: #8ecfff;
+        text-shadow: 0 0 3px #000;
+      }
+      #overlay .br { position: absolute; right: 12px; bottom: 8px; text-align: right; }
+      #overlay .bl { position: absolute; left: 12px; bottom: 8px; }
       #placeholder {
-        position: absolute;
-        inset: 0;
-        display: flex;
-        align-items: center;
-        justify-content: center;
-        text-align: center;
-        padding: 32px;
-        z-index: 5;
+        position: absolute; inset: 0;
+        display: flex; align-items: center; justify-content: center;
+        text-align: center; padding: 32px;
       }
-      #placeholder.hidden {
-        display: none;
+      #placeholder.hidden { display: none; }
+      #placeholder h1 { font-weight: 500; font-size: 16px; margin: 0 0 8px; }
+      #placeholder p { color: #a3a3a3; max-width: 520px; margin: 4px auto; font-size: 12px; }
+      #placeholder .disclaimer { margin-top: 20px; color: #8a8a8a; font-size: 11px; font-style: italic; }
+      #status {
+        position: fixed; top: 8px; right: 8px;
+        padding: 4px 10px; background: rgba(0,0,0,0.75); border-radius: 3px;
+        font-size: 11px; pointer-events: none; z-index: 10; color: #bbb;
       }
-      #placeholder h1 {
-        font-weight: 500;
-        font-size: 18px;
-        margin-bottom: 8px;
-      }
-      #placeholder p {
-        color: #a3a3a3;
-        max-width: 520px;
-        margin: 4px auto;
-        font-size: 13px;
-      }
-      #placeholder .disclaimer {
-        margin-top: 24px;
-        color: #8a8a8a;
-        font-size: 11px;
-        font-style: italic;
+      #status.hidden { display: none; }
+      #footer {
+        padding: 4px 12px; font-size: 10px; color: #666; background: #0d0d0d;
+        border-top: 1px solid #222; font-style: italic;
       }
     </style>
   </head>
   <body>
-    <div id="placeholder">
-      <div>
-        <h1>DICOM viewer - widget build v0.2.0</h1>
-        <p>Ask Claude to open a DICOM study to load it here.</p>
-        <p>Any DICOMweb URL works - paste a study link or provide a StudyInstanceUID.</p>
-        <p class="disclaimer">For demonstration, education, and non-diagnostic use only.</p>
-        <p id="diag" style="margin-top:24px; font-family:ui-monospace,monospace; font-size:11px; color:#6b7fff; line-height:1.6;">
-          widget js: loading...<br/>
-          app.connect: waiting<br/>
-          ontoolresult: waiting
-        </p>
+    <div id="shell">
+      <div id="topbar">
+        <h1>DICOM viewer</h1>
+        <div class="series" id="series-tabs"></div>
       </div>
+      <div id="viewport">
+        <div id="placeholder">
+          <div>
+            <h1>DICOM viewer ready</h1>
+            <p>Ask Claude to open a study to load it here.</p>
+            <p class="disclaimer">For demonstration, education, and non-diagnostic use only.</p>
+          </div>
+        </div>
+        <div id="overlay">
+          <div class="bl" id="overlay-bl"></div>
+          <div class="br" id="overlay-br"></div>
+        </div>
+      </div>
+      <div id="footer">For demonstration, education, and non-diagnostic use only.</div>
     </div>
     <div id="status" class="hidden"></div>
-    <iframe id="viewer" title="OHIF viewer" allow="fullscreen"></iframe>
     <script type="module" src="/src/widget.ts"></script>
   </body>
 </html>

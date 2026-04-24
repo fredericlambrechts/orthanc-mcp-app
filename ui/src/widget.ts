@@ -1,134 +1,268 @@
 /**
- * Widget entry point. Bootstraps the MCP Apps App, wires the OHIF bridge,
- * and handles tool results from the server.
+ * Widget entry. Thin <img>-per-slice viewer — the server decodes DICOM to
+ * PNG at `/render/:server/:study/:series/:instance.png`, the widget just
+ * fetches those PNGs and swaps them in as the user scrolls.
+ *
+ * No nested iframe (Claude's MCP Apps runtime drops `frameDomains` from
+ * the widget CSP meta, blocking cross-origin iframe loads). No web workers,
+ * no cornerstone, no megabyte bundles — just DICOMweb metadata fetches and
+ * a single <img>.
  */
 import { App } from '@modelcontextprotocol/ext-apps';
 import {
-  buildViewerUrl,
   createDebouncedStateUpdater,
-  parseOhifStateMessage,
-  renderStudyLaunchCard,
-  sendSetViewToIframe,
+  fetchInstanceUids,
+  fetchSeriesList,
+  hidePlaceholder,
   setStatus,
-  type SetViewCommand,
+  shortenUid,
+  type SeriesSummary,
   type StateUpdate,
   type ViewerInitialData,
 } from './bridge.js';
 
-// Expose for test and debugging; tree-shaking will keep this tiny.
 declare global {
   interface Window {
     __dicomMcpApp?: App;
-    __buildViewerUrl?: typeof buildViewerUrl;
   }
 }
 
-function setDiag(line: string, value: string): void {
-  const el = document.getElementById('diag');
-  if (!el) return;
-  el.innerHTML = el.innerHTML.replace(
-    new RegExp(`${line}:[^<]*`),
-    `${line}: ${value}`,
+// Render server path template. `dicomwebBaseUrl` is e.g.
+// `https://orthanc-mcp-app.fly.dev/dicomweb/orthanc-demo` so we peel off the
+// `/dicomweb/<serverId>` suffix to derive the render URL prefix.
+function buildRenderBase(dicomwebBaseUrl: string): string {
+  const match = dicomwebBaseUrl.match(/^(https?:\/\/[^/]+)\/dicomweb\/([^/]+)\/?$/);
+  if (!match) {
+    throw new Error(`Unexpected dicomwebBaseUrl shape: ${dicomwebBaseUrl}`);
+  }
+  const [, origin, serverId] = match;
+  return `${origin}/render/${serverId}`;
+}
+
+function buildRenderUrl(
+  renderBase: string,
+  studyUid: string,
+  seriesUid: string,
+  instanceUid: string,
+  opts?: { wc?: number; ww?: number },
+): string {
+  const params = new URLSearchParams();
+  if (opts?.wc != null) params.set('wc', String(opts.wc));
+  if (opts?.ww != null) params.set('ww', String(opts.ww));
+  const qs = params.toString();
+  return (
+    `${renderBase}/${encodeURIComponent(studyUid)}/${encodeURIComponent(
+      seriesUid,
+    )}/${encodeURIComponent(instanceUid)}.png` + (qs ? `?${qs}` : '')
   );
 }
 
-async function main(): Promise<void> {
-  setDiag('widget js', 'running');
+type Current = {
+  studyUid: string;
+  renderBase: string;
+  series: SeriesSummary[];
+  activeSeries: SeriesSummary;
+  instanceUids: string[];
+  index: number;
+  windowCenter?: number;
+  windowWidth?: number;
+};
 
+let current: Current | null = null;
+let viewImg: HTMLImageElement | null = null;
+
+function ensureViewerImg(): HTMLImageElement {
+  if (viewImg && viewImg.isConnected) return viewImg;
+  const viewport = document.getElementById('viewport');
+  if (!viewport) throw new Error('viewport element missing');
+  const img = document.createElement('img');
+  img.id = 'slice-img';
+  img.style.position = 'absolute';
+  img.style.inset = '0';
+  img.style.width = '100%';
+  img.style.height = '100%';
+  img.style.objectFit = 'contain';
+  img.style.background = '#000';
+  img.alt = 'DICOM slice';
+  viewport.appendChild(img);
+  viewImg = img;
+  return img;
+}
+
+function renderOverlay(): void {
+  const bl = document.getElementById('overlay-bl');
+  const br = document.getElementById('overlay-br');
+  if (!current) {
+    if (bl) bl.textContent = '';
+    if (br) br.textContent = '';
+    return;
+  }
+  const s = current.activeSeries;
+  if (bl) {
+    bl.textContent = `${s.modality} · ${s.description || 'series'}`;
+  }
+  if (br) {
+    br.textContent = `${current.index + 1} / ${current.instanceUids.length}`;
+  }
+}
+
+function renderSeriesTabs(onSelect: (s: SeriesSummary) => void): void {
+  const container = document.getElementById('series-tabs');
+  if (!container || !current) return;
+  container.innerHTML = '';
+  for (const s of current.series) {
+    const btn = document.createElement('button');
+    btn.type = 'button';
+    btn.textContent = `${s.modality} ${s.description || 'series'} · ${s.instanceCount}`;
+    btn.title = s.seriesInstanceUid;
+    if (s.seriesInstanceUid === current.activeSeries.seriesInstanceUid) {
+      btn.classList.add('active');
+    }
+    btn.addEventListener('click', () => onSelect(s));
+    container.appendChild(btn);
+  }
+}
+
+function paintCurrentSlice(): void {
+  if (!current) return;
+  const img = ensureViewerImg();
+  const uid = current.instanceUids[current.index];
+  const url = buildRenderUrl(
+    current.renderBase,
+    current.studyUid,
+    current.activeSeries.seriesInstanceUid,
+    uid,
+    { wc: current.windowCenter, ww: current.windowWidth },
+  );
+  img.src = url;
+}
+
+async function loadStudy(
+  data: ViewerInitialData,
+  onState: (s: StateUpdate) => void,
+): Promise<void> {
+  if (!data.studyUid) return;
+
+  const renderBase = buildRenderBase(data.dicomwebBaseUrl);
+  setStatus('Loading series…');
+  const series = await fetchSeriesList(data.dicomwebBaseUrl, data.studyUid);
+  if (series.length === 0) {
+    setStatus('No series in this study');
+    return;
+  }
+  hidePlaceholder();
+
+  const preferred =
+    series.find((s) => s.seriesInstanceUid === data.seriesUid) ?? series[0];
+
+  const selectSeries = async (chosen: SeriesSummary) => {
+    setStatus(`Loading ${chosen.modality}…`);
+    const instances = await fetchInstanceUids(
+      data.dicomwebBaseUrl,
+      data.studyUid!,
+      chosen.seriesInstanceUid,
+    );
+    if (instances.length === 0) {
+      setStatus('No instances in series');
+      return;
+    }
+    current = {
+      studyUid: data.studyUid!,
+      renderBase,
+      series,
+      activeSeries: chosen,
+      instanceUids: instances,
+      index: Math.floor(instances.length / 2),
+    };
+    paintCurrentSlice();
+    renderOverlay();
+    renderSeriesTabs((s) => {
+      void selectSeries(s);
+    });
+    setStatus(null);
+    onState({
+      study_uid: data.studyUid!,
+      series_uid: chosen.seriesInstanceUid,
+      modality: chosen.modality,
+      slice_index: current.index,
+      slice_count: instances.length,
+    });
+  };
+
+  // Wheel scrolls slices.
+  const viewport = document.getElementById('viewport');
+  if (viewport && !(viewport as HTMLElement & { __scrollWired?: boolean }).__scrollWired) {
+    viewport.addEventListener(
+      'wheel',
+      (ev) => {
+        if (!current || current.instanceUids.length === 0) return;
+        ev.preventDefault();
+        const next = Math.min(
+          Math.max(0, current.index + Math.sign((ev as WheelEvent).deltaY)),
+          current.instanceUids.length - 1,
+        );
+        if (next === current.index) return;
+        current.index = next;
+        paintCurrentSlice();
+        renderOverlay();
+        onState({ slice_index: current.index });
+      },
+      { passive: false },
+    );
+    (viewport as HTMLElement & { __scrollWired?: boolean }).__scrollWired = true;
+  }
+
+  await selectSeries(preferred);
+}
+
+async function main(): Promise<void> {
   const app = new App(
-    { name: 'orthanc-mcp-app/viewer', version: '0.1.0' },
+    { name: 'orthanc-mcp-app/viewer', version: '0.3.0' },
     {},
   );
 
-  // On every STATE_UPDATE from OHIF, push the state to the MCP server via
-  // the internal `_record_view_state` tool. The server caches it and
-  // describe_current_view reads from that cache.
   const updateContext = createDebouncedStateUpdater((state: StateUpdate) => {
     app
       .callServerTool({
         name: '_record_view_state',
         arguments: state as Record<string, unknown>,
       })
-      .catch((err: unknown) =>
-        console.warn('_record_view_state failed:', err),
-      );
+      .catch((err: unknown) => console.warn('_record_view_state failed:', err));
   }, 250);
 
-  // Tool results arrive via ontoolresult when a tool that renders this
-  // widget finishes (open_study, set_view, etc).
-  // ext-apps delivers the CallToolResult directly as `params` (schema:
-  // McpUiToolResultNotificationSchema → params = CallToolResultSchema).
-  app.ontoolresult = (params: {
-    structuredContent?: unknown;
-  }) => {
+  app.ontoolresult = (params: { structuredContent?: unknown }) => {
     const structured = params.structuredContent as
       | Record<string, unknown>
       | undefined;
-    const keys = structured ? Object.keys(structured).join(',') : '(no structured)';
-    setDiag('ontoolresult', `fired @ ${new Date().toISOString().slice(11, 23)} keys=${keys}`);
-
     if (!structured) return;
-
-    // open_study carries ui_meta.initialData in its result.
     const uiMeta = structured['ui_meta'] as
       | { initialData?: ViewerInitialData }
       | undefined;
     if (uiMeta?.initialData) {
-      setDiag('ontoolresult', `rendering launch card for ${uiMeta.initialData.studyUid?.slice(0, 16) ?? '?'}`);
-      renderStudyLaunchCard(uiMeta.initialData, {
-        openLink: (url) =>
-          app
-            .openLink({ url })
-            .catch((err) => {
-              console.warn('openLink failed:', err);
-              // Fall back to window.open in case the host didn't advertise
-              // openLinks capability.
-              window.open(url, '_blank', 'noopener,noreferrer');
-            }),
+      loadStudy(uiMeta.initialData, updateContext).catch((err: unknown) => {
+        console.error('loadStudy failed:', err);
+        setStatus(
+          `Load failed: ${err instanceof Error ? err.message : String(err)}`,
+        );
       });
-      return;
-    }
-
-    // set_view carries a `resolved` payload we can forward to OHIF.
-    const resolved = structured['resolved'] as
-      | Record<string, unknown>
-      | undefined;
-    if (resolved) {
-      const cmd: SetViewCommand = { type: 'SET_VIEW' };
-      if (typeof resolved.series_uid === 'string') cmd.seriesUid = resolved.series_uid;
-      if (typeof resolved.slice_index === 'number') cmd.sliceIndex = resolved.slice_index;
-      if (typeof resolved.window_center === 'number') cmd.windowCenter = resolved.window_center;
-      if (typeof resolved.window_width === 'number') cmd.windowWidth = resolved.window_width;
-      sendSetViewToIframe(cmd);
     }
   };
 
-  // Relay OHIF postMessage state updates back to the server.
-  window.addEventListener('message', (ev: MessageEvent) => {
-    const state = parseOhifStateMessage(ev.data);
-    if (state) updateContext(state);
-  });
-
   try {
-    setDiag('app.connect', 'calling...');
     await app.connect();
-    setDiag('app.connect', `ok @ ${new Date().toISOString()}`);
-    setStatus(null);
-
-    // We render a compact launch card, not a full viewer. ~300px tall is
-    // enough for the title, subtitle, button, URL row, and disclaimer.
-    app.sendSizeChanged({ width: 720, height: 300 }).catch((err) =>
-      console.warn('sendSizeChanged failed:', err),
-    );
+    app
+      .sendSizeChanged({ width: 900, height: 640 })
+      .catch((err: unknown) => console.warn('sendSizeChanged failed:', err));
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);
     console.error('App.connect failed:', err);
-    setDiag('app.connect', `FAILED: ${msg}`);
     setStatus(`Bridge error: ${msg}`);
   }
 
   window.__dicomMcpApp = app;
-  window.__buildViewerUrl = buildViewerUrl;
+  // Expose helpers for debugging/test harnesses.
+  (window as unknown as { __dicomMcpShorten?: typeof shortenUid }).__dicomMcpShorten =
+    shortenUid;
 }
 
 main().catch((err) => {
