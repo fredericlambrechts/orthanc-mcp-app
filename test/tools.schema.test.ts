@@ -73,13 +73,15 @@ describe('list_public_datasets', () => {
 });
 
 describe('search_studies - input validation', () => {
-  test('accepts a valid modality', async () => {
+  test('returns NOT_IMPLEMENTED even for valid input (v1 behaviour)', async () => {
     const { client } = await connectClient();
     const res = await client.callTool({
       name: 'search_studies',
       arguments: { modality: 'CT', limit: 10 },
     });
-    expect(res.isError).toBeFalsy();
+    expect(res.isError).toBe(true);
+    const s = res.structuredContent as { code: string };
+    expect(s.code).toBe('NOT_IMPLEMENTED');
   });
 
   test('rejects an unknown modality', async () => {

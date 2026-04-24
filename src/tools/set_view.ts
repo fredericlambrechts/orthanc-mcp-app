@@ -28,7 +28,7 @@ export function register(server: McpServer): void {
     TOOL_NAME,
     {
       description:
-        'Programmatically navigate the viewer. Any omitted field is left unchanged. Presets resolve server-side to window_center / window_width before being posted to the widget. Stub in U2; postMessage wiring lands in U4/U5.',
+        'Programmatically navigate the embedded viewer. Any omitted field is left unchanged. Preset names (soft-tissue, lung, bone, brain, mediastinum, liver, default) resolve server-side to DICOM window_center/window_width values before being posted to the widget. Use this to drive series/slice navigation or windowing in response to user requests like "switch to the lung window" or "go to slice 100".',
       inputSchema: {
         series_uid: z.string().optional().describe('Switch to this SeriesInstanceUID.'),
         slice_index: z
@@ -72,8 +72,6 @@ export function register(server: McpServer): void {
       const payload = {
         applied: true,
         resolved: applied,
-        note:
-          'stub implementation - postMessage to widget lands in U4/U5. No viewer is actually driven yet.',
       };
       return {
         content: [

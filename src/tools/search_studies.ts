@@ -12,7 +12,7 @@ export function register(server: McpServer): void {
     TOOL_NAME,
     {
       description:
-        'QIDO-RS search against a configured DICOMweb server. Returns matching studies with minimal metadata. Stub in U2; live search lands in U5/U6.',
+        'QIDO-RS search against a configured DICOMweb server by patient name, modality, or date range. NOT YET IMPLEMENTED - v1 returns isError. Use list_public_datasets instead to discover sample studies, or ask the user to paste a DICOMweb/Orthanc study URL and use open_study.',
       inputSchema: {
         server_id: z
           .string()
@@ -33,13 +33,15 @@ export function register(server: McpServer): void {
         limit: z.number().int().min(1).max(100).default(20),
       },
     },
-    async (args) => {
+    async (_args) => {
       const payload = {
-        studies: [],
-        query: args,
-        note: 'stub implementation - live QIDO-RS search will be wired in U5/U6',
+        error: true as const,
+        code: 'NOT_IMPLEMENTED' as const,
+        message:
+          'search_studies is not implemented in v1. Use list_public_datasets to browse sample studies, or ask the user for a DICOMweb/Orthanc URL and call open_study.',
       };
       return {
+        isError: true,
         content: [
           {
             type: 'text' as const,
